@@ -1,0 +1,28 @@
+# Retail game content (several GB) - never commit, must be supplied locally.
+game/
+
+# Produced by `rexglue codegen` from game/default.xex; regenerate locally.
+generated/
+
+# Build tree: binaries, dumps, logs. Only the hand-written helpers are kept.
+build/*
+!build/run_bfbc.bat
+!build/fix_gen_branches.ps1
+!build/add_funcs.ps1
+!build/analyze_image.ps1
+!build/disasm_pairs.ps1
+!build/nearest_entries.ps1
+!build/NOTES_missing_functions.md
+
+# Local artifacts
+*.log
+*.bin
+*.exe
+*.dll
+*.map
+*.png
+build.log
+codegen.log
+extract.log
+.freebuff/
+scale_test_ud/

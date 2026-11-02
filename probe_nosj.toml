@@ -1,0 +1,12 @@
+# Probe: identical to the real manifest but WITHOUT setjmp/longjmp hints, so we
+# can tell whether the analysis errors are caused by those two keys.
+
+[project]
+name = "bfbc"
+sdk_version = "0.10.0"
+game_root = "game"
+
+[entrypoint]
+file_path = "game/default.xex"
+out_directory_path = "generated/probe"
+includes = []

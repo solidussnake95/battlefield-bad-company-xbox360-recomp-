@@ -1,39 +1,40 @@
-# Battlefield: Bad Company — إعادة ترجمة ثابتة (Xbox 360) إلى Windows
+# Battlefield: Bad Company — Xbox 360 static recompilation for Windows
 
-مشروع **static recompilation** للعبة *Battlefield: Bad Company* (نسخة Xbox 360، Title ID `454107F9`)
-إلى تطبيق Windows x64 أصلي، باستخدام **ReXGlue SDK 0.10.0**.
+A **static recompilation** of *Battlefield: Bad Company* (Xbox 360, Title ID `454107F9`)
+into a native Windows x64 application, built with **ReXGlue SDK 0.10.0**.
 
-المستودع يحتوي **كود المشروع فقط** — لا يوجد فيه أي ملف من اللعبة الأصلية
-(`game/` و `generated/` مستثنيان، والتفاصيل أدناه).
+This repository contains **project code only** — no retail game content and no code
+generated from it (`game/` and `generated/` are ignored; see below).
 
 ---
 
-## المحتويات
+## Contents
 
-| المسار | الوصف |
+| Path | Description |
 |---|---|
-| `CMakeLists.txt` | هدف البناء `bfbc.exe` (WIN32) + إعداد إضافة الرسوميات وملف الخريطة |
-| `bfbc_manifest.toml` | بيان إعادة الترجمة: نقطة الدخول، `setjmp/longjmp`، نقاط دخول دوال اكتُشفت يدوياً |
-| `src/main.cpp` | تسجيل التطبيق (`REX_DEFINE_APP`) |
-| `src/bfbc_app.h` | التطبيق: افتراضات التشغيل، تحميل إضافة الرسوميات، تسجيل إدخال الماوس/الكيبورد |
-| `src/bfbc_graphics.h` | منيو F5: الدقة، الدقة الداخلية، VSync، الفلترة، حساسية الماوس، أزرار الكيبورد |
-| `src/bfbc_patches.cpp` | تجاوز دوال `XeKeys*` في الـ SDK (تحقق توقيع القرص) |
-| `build.ps1` | بناء كامل: configure ← codegen ← إصلاح الفروع ← Ninja |
-| `build/fix_gen_branches.ps1` | إصلاح فروع يولّدها codegen كـ `REX_FATAL` رغم وجود الهدف |
-| `build/add_funcs.ps1`, `build/analyze_image.ps1` | أدوات إضافة دوال مفقودة إلى البيان |
-| `build/NOTES_missing_functions.md` | منهجية اكتشاف الدوال الناقصة وتفادي تقسيم الدوال |
-| `build/run_bfbc.bat` | مشغّل مختصر (لم يعد ضرورياً) |
+| `CMakeLists.txt` | Builds `bfbc.exe` (WIN32) and stages the GPU plugin plus a linker map |
+| `bfbc_manifest.toml` | Recompilation manifest: entry point, `setjmp/longjmp`, hand-discovered function entries |
+| `src/main.cpp` | Registers the application (`REX_DEFINE_APP`) |
+| `src/bfbc_app.h` | App hooks: launch defaults, GPU plugin preload, mouse/keyboard driver |
+| `src/bfbc_graphics.h` | F5 overlay: display, resolution, VSync, filtering, mouse sensitivity, key bindings |
+| `src/bfbc_patches.cpp` | Stubs for the SDK's `XeKeys*` licence-signature functions |
+| `build.ps1` | Full build: configure → codegen → branch repair → Ninja |
+| `build/fix_gen_branches.ps1` | Rewrites codegen branches that become `REX_FATAL` although their label exists |
+| `build/add_funcs.ps1`, `build/analyze_image.ps1` | Tooling for adding missing function entries to the manifest |
+| `build/NOTES_missing_functions.md` | How missing functions were found without splitting existing ones |
+| `build/run_bfbc.bat` | Short launcher (no longer required) |
+| `RELEASE.md` | How the Windows package is assembled and published |
 
 ---
 
-## المتطلبات
+## Requirements
 
 - Windows x64.
-- **ReXGlue SDK 0.10.0** (`win-amd64`) — يوفر `rexglue.exe` و`rexruntime.dll` و`rexgpu-xenos.dll`.
-- **LLVM/Clang 19.1.5** و **CMake 3.31.6** و **Ninja 1.13.2**.
-- sysroot من `xwin` يحوي MSVC 14.44 و Windows SDK 10.0.26100 (لا حاجة لتثبيت Visual Studio).
+- **ReXGlue SDK 0.10.0** (`win-amd64`) — provides `rexglue.exe`, `rexruntime.dll` and `rexgpu-xenos.dll`.
+- **LLVM/Clang 19.1.5**, **CMake 3.31.6**, **Ninja 1.13.2**.
+- An `xwin` sysroot with MSVC 14.44 and Windows SDK 10.0.26100 (no Visual Studio install needed).
 
-المسارات مكتوبة في أعلى `build.ps1`، عدّلها لتطابق جهازك:
+The toolchain paths are set at the top of `build.ps1`; point them at your machine:
 
 ```powershell
 $Toolchain = "D:\SAINTS ROW\build\toolchain"
@@ -42,89 +43,84 @@ $Sdk       = "D:\recomps\.sdk\rexglue-sdk-0.10.0\win-amd64"
 
 ---
 
-## ملفات اللعبة (غير مرفقة)
+## Game files (not included)
 
-ضع نسخة **تملكها قانونياً** داخل `game/` بحيث يوجد:
+Place a copy **you own** in `game/` so that it looks like this:
 
 ```
-game/default.xex          # الصورة التنفيذية للعبة
-game/Output/...           # بيانات المحتوى
+game/default.xex          # the title's executable image
+game/Output/...           # content data
 game/dist/...
+game/dvd-prb/...
 ```
 
-بدون `default.xex` لا يمكن توليد الكود ولا تشغيل اللعبة.
+Nothing can be generated or run without `default.xex`.
 
 ---
 
-## البناء والتشغيل
+## Build and run
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File build.ps1
 build\bfbc.exe
 ```
 
-`build.ps1` يقوم بالتسلسل التالي:
+`build.ps1` performs, in order:
 
-1. `cmake` configure بمترجم Clang وruntime ديناميكي.
-2. `rexglue codegen bfbc_manifest.toml` — يولّد `generated/default/*` من `game/default.xex`.
-3. `build/fix_gen_branches.ps1` — يصلح فروع codegen قبل تجميعها.
-4. بناء Ninja ← `build/bfbc.exe`.
+1. CMake configure with Clang and the dynamic runtime.
+2. `rexglue codegen bfbc_manifest.toml` — emits `generated/default/*` from `game/default.xex`.
+3. `build/fix_gen_branches.ps1` — repairs codegen branch output before it is compiled.
+4. Ninja build → `build/bfbc.exe`.
 
-تشغيل `bfbc.exe` مباشرة (نقر مزدوج) يكفي: التطبيق يضبط لنفسه مسار `..\game`،
-ويحمّل إضافة `xenos`، ويسمح للعبة بالكتابة في `GAME:\`، ثم ينشئ نظام الرسوميات.
+Running `bfbc.exe` on its own (double-click) is enough: it locates `..\game` (or `game\`
+next to the executable), loads the `xenos` plugin, allows the title to write to `GAME:\`,
+and then creates the graphics system.
 
----
-
-## ما أُضيف فوق الـ SDK
-
-1. **افتراضات التشغيل** (`OnConfigurePaths`): مسار بيانات اللعبة، `gpu_plugin=xenos`،
-   و`allow_game_relative_writes` عند غياب أي تحديد من سطر الأوامر أو `bfbc.toml`.
-2. **دقة الرندر تعمل فعلاً** (`OnPreSetup`): إضافة الرسوميات تسجّل متغيّراتها عند تحميل
-   الـ DLL، والـ SDK يحمّلها بعد قراءة `bfbc.toml`، فكانت `draw_resolution_scale_x/y`
-   تُهمل ويُبنى كاش أهداف الرندر على 1x دائماً. الآن يُحمَّل الـ DLL أولاً لتسجيل
-   المتغيّرات، تُطبَّق القيم المحفوظة، ثم يُنشأ نظام الرسوميات.
-3. **ماوس وكيبورد** (`OnPostSetup`): تسجيل `MnkInputDriver` الخاص بالـ SDK
-   (WASD للحركة، الماوس للعصا اليمنى، وأزرار اليد على مفاتيح اللوحة).
-4. **منيو F5** (`bfbc_graphics.h`): وضع العرض، دقة المخرج، الدقة الداخلية، VSync،
-   الفلترة anisotropy، تجميع الشيدر، حساسية الماوس، وتعديل كل `keybind_*` —
-   والكل يُحفظ في `bfbc.toml`.
-5. **`bfbc_patches.cpp`**: `XeKeysConsolePrivateKeySign` و`XeKeysConsoleSignatureVerification`
-   تعيد النجاح بدل 0، وإلا abort اللعبة على تحقق القرص.
-6. **`fix_gen_branches.ps1`**: يعيد كتابة فروع شرطية يولّدها الـ emitter كـ `REX_FATAL`
-   بينما هدفها موجود داخل نفس الدالة (`goto loc_XXXX`).
+A prebuilt Windows package is published under
+[Releases](https://github.com/solidussnake95/battlefield-bad-company-xbox360-recomp-/releases).
 
 ---
 
-## القيود المعروفة
+## What this project adds on top of the SDK
 
-- **لا محدد فريمات**: SDK 0.10.0 لا يوفر `fps_limit`، و`video_mode_refresh_rate`
-  مقيس أنه لا يؤثر على الإيقاع. المتاح هو VSync (معدل الشاشة) أو إيقافه.
-- **تغيير الدقة الداخلية** يُحفظ في `bfbc.toml` ويُطبَّق بعد إعادة التشغيل، لأن
-  كاش أهداف الرندر يُبنى مرة واحدة عند الإقلاع.
-- **الماوس ليس raw**: اللعبة تقرأ عصا تماثلية فقط، فأي حل ماوس هو محاكاة للعصا
-  اليمنى ويتبع منحنى اللعبة. الحساسية قابلة للضبط من F5.
-- بعض الأصول/الإعدادات الاختيارية تظهر كتحذيرات `NtCreateFile` (ملفات غير موجودة
-  في نسخة القرص) ولا تمنع التشغيل.
+1. **Launch defaults** (`OnConfigurePaths`): game data root, `gpu_plugin=xenos`,
+   and `allow_game_relative_writes` — applied only when neither the command line
+   nor `bfbc.toml` decides, so explicit settings always win.
+2. **Internal resolution actually works** (`OnPreSetup`): the GPU plugin registers its
+   cvars when its DLL is loaded, but the SDK loads that DLL during presentation setup,
+   after `bfbc.toml` has been read. Saved `draw_resolution_scale_x/y` values were
+   therefore dropped and the render-target cache was always built at 1×. The DLL is now
+   preloaded so the cvars exist, the saved values are pushed in, and only then is the
+   graphics system created.
+3. **Mouse and keyboard** (`OnPostSetup`): registers the SDK's `MnkInputDriver`
+   (WASD movement, mouse as the right stick, pad buttons on the keyboard).
+4. **F5 overlay** (`bfbc_graphics.h`): display mode, output resolution, internal
+   resolution, VSync, anisotropy, shader compilation, mouse sensitivity and every
+   `keybind_*` — all saved to `bfbc.toml`.
+5. **`bfbc_patches.cpp`**: `XeKeysConsolePrivateKeySign` and
+   `XeKeysConsoleSignatureVerification` report success instead of 0, otherwise the
+   title aborts on its disc check.
+6. **`fix_gen_branches.ps1`**: turns `if (cond) REX_FATAL(...)` back into
+   `if (cond) goto loc_XXXX;` where the emitter failed to classify a branch whose
+   target label is present in the emitted body.
 
 ---
 
-## ملاحظة قانونية
+## Known limitations
 
-المستودع **لا يحتوي** أي ملف من اللعبة الأصلية ولا كوداً مولّداً منها.
-`game/` و`generated/` مستثنيان في `.gitignore`. لتشغيل المشروع يجب أن تستخدم
-نسخة من اللعبة تملكها.
+- **No frame limiter**: SDK 0.10.0 exposes none, and `video_mode_refresh_rate` was
+  measured to have no effect on pacing. VSync (display rate) or nothing.
+- **Internal resolution changes** are saved to `bfbc.toml` and applied on the next
+  launch, because the render-target cache is created once at startup.
+- **The mouse is not raw input**: the title only reads an analog stick, so mouse look
+  emulates the right stick and follows the game's own curve. Sensitivity is tunable in F5.
+- Some optional assets produce `NtCreateFile` warnings (files absent from the disc
+  image); they do not prevent startup.
 
 ---
 
-## English summary
+## Legal
 
-Static recompilation of *Battlefield: Bad Company* (Xbox 360) to a native Windows x64
-executable using ReXGlue SDK 0.10.0. This repository contains only the project code:
-the retail `game/` data and the generated `generated/` sources are excluded and must be
-produced locally (`rexglue codegen`). Build with `build.ps1` after pointing it at your
-ReXGlue SDK, LLVM and sysroot. Notable fixes: resolution scaling was silently ignored
-because the GPU plugin registers its cvars after the config is read (fixed by preloading
-the plugin and applying the values before the graphics system is created); the app now
-starts without command-line arguments; keyboard/mouse controller emulation is registered;
-and the F5 overlay exposes display, resolution, mouse sensitivity and key binding settings.
-No game content is distributed here.
+This repository contains **no** game content and **no** generated code derived from it.
+`game/` and `generated/` are listed in `.gitignore`. To use this project you must own
+a copy of the game.

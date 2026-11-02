@@ -26,3 +26,6 @@ codegen.log
 extract.log
 .freebuff/
 scale_test_ud/
+
+# Packaged distributable of the recompiled binary (see RELEASE.md)
+release/

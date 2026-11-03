@@ -34,12 +34,7 @@ generated from it (`game/` and `generated/` are ignored; see below).
 - **LLVM/Clang 19.1.5**, **CMake 3.31.6**, **Ninja 1.13.2**.
 - An `xwin` sysroot with MSVC 14.44 and Windows SDK 10.0.26100 (no Visual Studio install needed).
 
-The toolchain paths are set at the top of `build.ps1`; point them at your machine:
-
-```powershell
-$Toolchain = "D:\SAINTS ROW\build\toolchain"
-$Sdk       = "D:\recomps\.sdk\rexglue-sdk-0.10.0\win-amd64"
-```
+The toolchain paths are set at the top of `build.ps1`; point them at your machine.
 
 ---
 

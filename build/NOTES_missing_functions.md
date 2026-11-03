@@ -76,7 +76,8 @@ Get-Content build\missing_prev.txt, build\add_next_final.txt |
 powershell -ExecutionPolicy Bypass -File build\add_funcs.ps1 -ListFile build\missing_next.txt
 
 # 2. codegen, then confirm the addresses became real functions
-& D:\recomps\.sdk\rexglue-sdk-0.10.0\win-amd64\bin\rexglue.exe codegen bfbc_manifest.toml
+# $env:REXSDK comes from the toolchain paths at the top of build.ps1
+& "$env:REXSDK\bin\rexglue.exe" codegen bfbc_manifest.toml
 Select-String generated\default\*.cpp -Pattern 'DEFINE_REX_FUNC\(sub_XXXX\)'
 
 # 3. build and run

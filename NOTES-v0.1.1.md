@@ -16,7 +16,12 @@ there is no behavioural reason to replace your copy.
   The build instructions now refer to the `$Toolchain` / `$Sdk` variables at the top
   of `build.ps1`, and the codegen example in
   `build/NOTES_missing_functions.md` uses `$env:REXSDK`, which `build.ps1` sets.
-- Packaging steps and the publication warning are documented in `RELEASE.md`.
+- Packaging steps and the publication warning are documented in `RELEASE.md`, which now
+  also lists what the packaging command actually produces.
+- The repository page opens with a generated SVG banner (`docs/images/hero.svg`) instead
+  of plain text. It is a graphic, **not** an in-game screenshot.
+- `.gitignore` allows `docs/images/*.png` and `*.jpg` so real screenshots can be added
+  later without loosening the rule that keeps dumps, logs and build output out of git.
 
 Nothing in the runtime, the graphics path, the input mapping or the manifest changed.
 

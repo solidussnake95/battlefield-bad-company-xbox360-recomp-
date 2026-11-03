@@ -1,5 +1,7 @@
 # Battlefield: Bad Company — Xbox 360 static recompilation for Windows
 
+![Battlefield: Bad Company — Xbox 360 static recompilation for Windows](docs/images/hero.svg)
+
 A **static recompilation** of *Battlefield: Bad Company* (Xbox 360, Title ID `454107F9`)
 into a native Windows x64 application, built with **ReXGlue SDK 0.10.0**.
 

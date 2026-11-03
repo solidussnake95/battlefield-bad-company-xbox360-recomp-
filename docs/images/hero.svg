@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" width="1200" height="420" role="img" aria-label="Battlefield: Bad Company — Xbox 360 static recompilation for Windows">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0a120e"/>
+      <stop offset="55%" stop-color="#122019"/>
+      <stop offset="100%" stop-color="#0d1612"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7ac943"/>
+      <stop offset="100%" stop-color="#2f7d32"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.82" cy="0.18" r="0.65">
+      <stop offset="0%" stop-color="#7ac943" stop-opacity="0.28"/>
+      <stop offset="100%" stop-color="#7ac943" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#7ac943" stroke-opacity="0.07" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="420" fill="url(#bg)"/>
+  <rect width="1200" height="420" fill="url(#grid)"/>
+  <rect width="1200" height="420" fill="url(#glow)"/>
+  <rect x="0" y="0" width="1200" height="6" fill="url(#accent)"/>
+  <rect x="0" y="414" width="1200" height="6" fill="url(#accent)"/>
+
+  <g font-family="Segoe UI, Helvetica, Arial, sans-serif">
+    <text x="72" y="108" fill="#7ac943" font-size="20" font-weight="600" letter-spacing="6">STATIC RECOMPILATION</text>
+
+    <text x="68" y="188" fill="#f2f6f1" font-size="64" font-weight="800" letter-spacing="-0.5">Battlefield: Bad Company</text>
+
+    <text x="72" y="240" fill="#9fb3a6" font-size="28" font-weight="500">Xbox 360  &#8594;  native Windows x64</text>
+
+    <g font-size="20" fill="#c8d6cb">
+      <rect x="72" y="300" width="196" height="44" rx="22" fill="#7ac943" fill-opacity="0.14" stroke="#7ac943" stroke-opacity="0.45"/>
+      <text x="170" y="328" text-anchor="middle">ReXGlue 0.10.0</text>
+
+      <rect x="288" y="300" width="150" height="44" rx="22" fill="#7ac943" fill-opacity="0.14" stroke="#7ac943" stroke-opacity="0.45"/>
+      <text x="363" y="328" text-anchor="middle">Title 454107F9</text>
+
+      <rect x="458" y="300" width="134" height="44" rx="22" fill="#7ac943" fill-opacity="0.14" stroke="#7ac943" stroke-opacity="0.45"/>
+      <text x="525" y="328" text-anchor="middle">Source only</text>
+    </g>
+
+    <text x="72" y="386" fill="#6f8377" font-size="19">No game content in this repository — you supply your own copy of the disc.</text>
+  </g>
+
+  <g transform="translate(1082 86)" fill="none" stroke="#7ac943">
+    <circle cx="0" cy="0" r="56" stroke-opacity="0.45" stroke-width="2"/>
+    <circle cx="0" cy="0" r="38" stroke-opacity="0.25" stroke-width="2"/>
+    <path d="M-19 19 L19 -19" stroke-opacity="0.6" stroke-width="5" stroke-linecap="round"/>
+    <path d="M-19 -19 L19 19" stroke-opacity="0.25" stroke-width="5" stroke-linecap="round"/>
+  </g>
+</svg>

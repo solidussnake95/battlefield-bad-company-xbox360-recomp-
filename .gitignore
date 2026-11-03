@@ -21,6 +21,10 @@ build/*
 *.dll
 *.map
 *.png
+
+# Screenshots shown in the README are intentional
+!docs/images/*.png
+!docs/images/*.jpg
 build.log
 codegen.log
 extract.log

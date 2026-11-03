@@ -8,22 +8,44 @@ This release repackages the v0.1.0 build. The application code (`src/`,
 documentation and the repository hygiene around it. If you already run v0.1.0,
 there is no behavioural reason to replace your copy.
 
-## What changed since v0.1.0
+## Fixes and changes since v0.1.0
 
-- `README.md` and `RELEASE.md` rewritten in English and brought up to date with the
-  current tree.
-- Hard-coded machine-specific toolchain paths were removed from the documentation.
-  The build instructions now refer to the `$Toolchain` / `$Sdk` variables at the top
-  of `build.ps1`, and the codegen example in
-  `build/NOTES_missing_functions.md` uses `$env:REXSDK`, which `build.ps1` sets.
-- Packaging steps and the publication warning are documented in `RELEASE.md`, which now
-  also lists what the packaging command actually produces.
-- The repository page opens with a generated SVG banner (`docs/images/hero.svg`) instead
-  of plain text. It is a graphic, **not** an in-game screenshot.
-- `.gitignore` allows `docs/images/*.png` and `*.jpg` so real screenshots can be added
-  later without loosening the rule that keeps dumps, logs and build output out of git.
+Every item below fixes documentation or repository packaging. **No in-game defect
+was fixed in this release**: `src/`, `bfbc_manifest.toml`, `build.ps1` and the CMake
+files are identical to v0.1.0, so the graphics path, the input mapping and the
+runtime behaviour are unchanged.
 
-Nothing in the runtime, the graphics path, the input mapping or the manifest changed.
+Documentation
+
+- **Fixed:** `README.md` and `RELEASE.md` were stale, and the README was written in
+  Arabic while the rest of the project is English. Both are rewritten in English and
+  now match the current tree.
+- **Fixed:** the README published the author's machine layout by hard-coding
+  `D:\SAINTS ROW\build\toolchain` and the SDK path under `D:\recomps\.sdk`. The
+  paths are gone; the text points at the `$Toolchain` / `$Sdk` variables at the top
+  of `build.ps1`.
+- **Fixed:** the codegen example in `build/NOTES_missing_functions.md` hard-coded the
+  same SDK path. It now uses `$env:REXSDK`, which `build.ps1` already sets.
+- **Fixed:** `RELEASE.md` listed `README.txt` and `game/PUT-YOUR-GAME-FILES-HERE.txt`
+  although no packaging step created them. The placeholder is now written by step 2,
+  and `README.txt` is documented as hand-written with its expected contents.
+- **Fixed:** the package layout omitted `NOTES-v0.1.1.md`, which ships with the archive
+  and is the text of this release.
+- **Clarified:** the packaging test results in `RELEASE.md` belong to v0.1.0; v0.1.1
+  must repeat the checklist further down this file.
+- **Clarified:** `game/` is empty by design and no `.map`, `.pdb` or `generated/`
+  sources are shipped.
+
+Repository
+
+- **Fixed:** `.gitignore` ignored every `*.png`, including documentation images.
+  `docs/images/*.png` and `*.jpg` are now allowed; dumps, logs and build output are
+  still ignored.
+- **Added:** a generated SVG banner (`docs/images/hero.svg`) at the top of the README,
+  because the repository page opened with plain text. It is a graphic, **not** an
+  in-game screenshot, and it is cosmetic only.
+- **Added:** `RELEASE.md` documents the publication warning, so the consequence of
+  shipping `bfbc.exe` (code derived from the game) is written down next to the steps.
 
 ## What is in the archive
 - `bin\bfbc.exe` — the application (Release, x64). Double-click it; no arguments needed.

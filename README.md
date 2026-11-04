@@ -42,7 +42,7 @@ The toolchain paths are set at the top of `build.ps1`; point them at your machin
 
 ## Game files (not included)
 
-Place a copy **you own** in `game/` so that it looks like this:
+Place a copy **you own** in `gamedump/` so that it looks like this:
 
 ```
 game/default.xex          # the title's executable image

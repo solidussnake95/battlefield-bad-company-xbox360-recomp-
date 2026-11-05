@@ -5,6 +5,9 @@
 cmake_minimum_required(VERSION 3.25)
 project(bfbc LANGUAGES CXX)
 
+# The Windows shell icon lives in a .rc resource; llvm-rc compiles it.
+enable_language(RC)
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -13,7 +16,10 @@ include(generated/rexglue.cmake)
 # Sources
 set(BFBC_SOURCES
     src/main.cpp
+    src/bfbc_frame.cpp
+    src/bfbc_mouse.cpp
     src/bfbc_patches.cpp
+    src/bfbc.rc
 )
 
 if(WIN32)

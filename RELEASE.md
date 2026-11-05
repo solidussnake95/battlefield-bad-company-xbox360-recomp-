@@ -66,7 +66,8 @@ tick the checklist in `NOTES-v0.1.1.md`:
 
 - window came up and stayed responsive: `bfbc [rexglue-v0.10.0-Release]`
 - `draw_resolution_scale_x/y = 2` and `resolution_scale = 2` applied before GPU init
-- `Input: keyboard/mouse driver registered`
+- `Input: custom input system built (pads=sdl, keyboard/mouse=shaped)`
+- `MouseShape: right-stick shaping is live` once the guest polls the pad
 - `bin\bfbc.exe` hash identical to the build output
 
 ## Publishing on GitHub

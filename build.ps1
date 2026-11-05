@@ -61,6 +61,7 @@ $cfgArgs = @(
     "-DCMAKE_BUILD_TYPE=Release",
     "-DCMAKE_C_COMPILER=$(Join-Path $Llvm 'bin\clang.exe')",
     "-DCMAKE_CXX_COMPILER=$(Join-Path $Llvm 'bin\clang++.exe')",
+    "-DCMAKE_RC_COMPILER=$(Join-Path $Llvm 'bin\llvm-rc.exe')",
     # The xwin sysroot only ships the release CRT (no msvcrtd.lib), so pin every
     # configuration to the release runtime; this is what the runtime expects.
     "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL",

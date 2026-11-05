@@ -27,6 +27,7 @@
 #endif
 
 #include "bfbc_graphics.h"
+#include "bfbc_mouse.h"
 
 class BfbcApp : public rex::ReXApp {
  public:
@@ -92,6 +93,27 @@ class BfbcApp : public rex::ReXApp {
     if (rex::cvar::GetFlagSource("mnk_mouse") == rex::cvar::Source::kDefault) {
       rex::cvar::SetFlagByName("mnk_mouse", "true");
     }
+
+    // The input module registers keybind_* after the SDK has already read
+    // bfbc.toml, so a saved binding never reached its cvar and every launch fell
+    // back to the SDK defaults. Push the file's bindings here first.
+    ApplySavedKeyBinds();
+
+    // Keyboard/mouse layout: A=F, B=C and Ctrl, X=R, LB=Q, RB=2, the triggers
+    // on the mouse buttons and the d-pad on the arrow keys. The SDK already
+    // records mouse buttons as virtual keys (LMB/RMB), so binding them to the
+    // pad's triggers is enough. F5/F4 can rebind any of these at any time.
+    ApplyDefaultBind("keybind_a", "F");
+    ApplyDefaultBind("keybind_b", "C,Ctrl");  // two keys: C alone or Ctrl
+    ApplyDefaultBind("keybind_x", "R");
+    ApplyDefaultBind("keybind_left_shoulder", "Q");
+    ApplyDefaultBind("keybind_right_shoulder", "2");
+    ApplyDefaultBind("keybind_right_trigger", "LMB");  // fire
+    ApplyDefaultBind("keybind_left_trigger", "RMB");   // aim
+    ApplyDefaultBind("keybind_dpad_up", "Up");
+    ApplyDefaultBind("keybind_dpad_down", "Down");
+    ApplyDefaultBind("keybind_dpad_left", "Left");
+    ApplyDefaultBind("keybind_dpad_right", "Right");
   }
 
   // The GPU plugin registers its cvars from its own DLL initialisers, and the
@@ -105,15 +127,38 @@ class BfbcApp : public rex::ReXApp {
   // be pushed in before the plugin constructs the graphics system. The SDK
   // then skips its own load because config.graphics is already set.
   void OnPreSetup(rex::RuntimeConfig& config) override {
+    // The SDK's default input system always registers its own keyboard/mouse
+    // driver, and a second one cannot take over: MnkInputDriver hashes every
+    // device to one constant handle and InputSystem::DriverForDevice() resolves
+    // that handle to the first driver that reported it. The wrapping driver was
+    // therefore registered but never polled, so bfbc_mouse_* did nothing.
+    // Supplying the factory is the supported way to put ours in its place.
+    config.input_factory = &bfbc::CreateShapedInputSystem;
+
     if (config.graphics || config.gpu_plugin.empty()) {
       return;
     }
 
     PreloadPluginDll(config.gpu_plugin);
 
-    static constexpr const char* kStartupOnlyFlags[] = {"draw_resolution_scale_x",
-                                                       "draw_resolution_scale_y",
-                                                       "resolution_scale"};
+    // The draw scale sizes the render target cache, and the lighting switches
+    // decide how scaled draws and resolves are sampled. All of them are read
+    // while the plugin builds that cache, so the saved values have to be in
+    // place here rather than after the window exists.
+    static constexpr const char* kStartupOnlyFlags[] = {
+        "draw_resolution_scale_x",
+        "draw_resolution_scale_y",
+        "resolution_scale",
+        "draw_resolution_scaled_texture_offsets",
+        "resolve_resolution_scale_fill_half_pixel_offset",
+        "readback_resolve_half_pixel_offset",
+        "d3d12_readback_resolve",
+        "depth_float24_convert_in_pixel_shader",
+        "depth_float24_round",
+        "depth_transfer_not_equal_test",
+        "gpu_3d_to_2d_texture",
+        "texture_cache_memory_limit_render_to_texture",
+    };
     for (const char* flag : kStartupOnlyFlags) {
       const std::string value = ReadConfigValue(config_path_, flag);
       if (value.empty()) {
@@ -139,19 +184,48 @@ class BfbcApp : public rex::ReXApp {
     if (!runtime || !game_window) {
       return;
     }
-    auto* input = static_cast<rex::input::InputSystem*>(runtime->input_system());
-    if (!input) {
+    if (!runtime->input_system()) {
       REXLOG_WARN("Input: no input system, keyboard/mouse not available");
       return;
     }
-    input->AddDriver(std::make_unique<rex::input::mnk::MnkInputDriver>(game_window, 0));
-    REXLOG_INFO("Input: keyboard/mouse driver registered");
+    // The drivers, including the keyboard/mouse shaping one, were registered by
+    // the factory installed in OnPreSetup; the SDK attaches the window to them
+    // once it exists (OnWindowAvailable).
+    REXLOG_INFO("Input: keyboard/mouse shaping active (gain={} curve={} dz={})",
+                REXCVAR_GET(bfbc_mouse_gain), REXCVAR_GET(bfbc_mouse_curve),
+                REXCVAR_GET(bfbc_mouse_deadzone));
+    // OnConfigurePaths runs before logging exists, so report the shooter
+    // bindings here - this is what the guest will actually see.
+    REXLOG_INFO("Input: fire='{}' aim='{}' | a='{}' b='{}' x='{}' lb='{}' rb='{}'",
+                rex::cvar::GetFlagByName("keybind_right_trigger"),
+                rex::cvar::GetFlagByName("keybind_left_trigger"),
+                rex::cvar::GetFlagByName("keybind_a"),
+                rex::cvar::GetFlagByName("keybind_b"),
+                rex::cvar::GetFlagByName("keybind_x"),
+                rex::cvar::GetFlagByName("keybind_left_shoulder"),
+                rex::cvar::GetFlagByName("keybind_right_shoulder"));
+    REXLOG_INFO("Input: dpad='{}','{}','{}','{}'",
+                rex::cvar::GetFlagByName("keybind_dpad_up"),
+                rex::cvar::GetFlagByName("keybind_dpad_down"),
+                rex::cvar::GetFlagByName("keybind_dpad_left"),
+                rex::cvar::GetFlagByName("keybind_dpad_right"));
 
     for (const std::string& name : rex::cvar::ListFlags()) {
       if (name.rfind("keybind_", 0) == 0 || name.rfind("mnk_", 0) == 0) {
         REXLOG_DEBUG("Input: {} = '{}'", name, rex::cvar::GetFlagByName(name));
       }
     }
+
+    // Shadow depth work happens in the texture/render-target cache, so record
+    // its budget next to the depth conversions: an evicted shadow map looks
+    // exactly like a broken depth compare.
+    const auto flag = [](const char* name) -> std::string {
+      return rex::cvar::GetFlagInfo(name) ? rex::cvar::GetFlagByName(name) : std::string("n/a");
+    };
+    REXLOG_INFO("GPU: rt limit='{}' soft='{}' hard='{}' invalid_fetch='{}' 3d2d='{}'",
+                flag("texture_cache_memory_limit_render_to_texture"),
+                flag("texture_cache_memory_limit_soft"), flag("texture_cache_memory_limit_hard"),
+                flag("gpu_allow_invalid_fetch_constants"), flag("gpu_3d_to_2d_texture"));
   }
 
   // Every overlay (F3 stats, F4 cvars, F5 graphics, console) uses the SDK's
@@ -165,6 +239,49 @@ class BfbcApp : public rex::ReXApp {
     if (imgui_style.FontScaleMain < kOverlayFontScale) {
       imgui_style.FontScaleMain = kOverlayFontScale;
     }
+
+    // The SDK palette is green; every overlay here uses blue accents instead.
+    ImVec4* c = imgui_style.Colors;
+    const ImVec4 accent(0.33f, 0.63f, 1.00f, 1.00f);
+    const ImVec4 accent_soft(0.47f, 0.72f, 1.00f, 1.00f);
+    const ImVec4 accent_deep(0.17f, 0.36f, 0.62f, 1.00f);
+    const ImVec4 frame(0.08f, 0.13f, 0.22f, 1.00f);
+    const ImVec4 line(0.24f, 0.42f, 0.68f, 0.55f);
+
+    c[ImGuiCol_Text] = ImVec4(0.90f, 0.94f, 1.00f, 1.00f);
+    c[ImGuiCol_TextDisabled] = ImVec4(0.56f, 0.64f, 0.78f, 1.00f);
+    c[ImGuiCol_WindowBg] = ImVec4(0.04f, 0.07f, 0.12f, 0.94f);
+    c[ImGuiCol_ChildBg] = ImVec4(0.05f, 0.09f, 0.15f, 0.60f);
+    c[ImGuiCol_PopupBg] = ImVec4(0.06f, 0.10f, 0.17f, 0.96f);
+    c[ImGuiCol_Border] = line;
+    c[ImGuiCol_FrameBg] = frame;
+    c[ImGuiCol_FrameBgHovered] = ImVec4(0.15f, 0.27f, 0.44f, 1.00f);
+    c[ImGuiCol_FrameBgActive] = ImVec4(0.20f, 0.35f, 0.56f, 1.00f);
+    c[ImGuiCol_TitleBg] = accent_deep;
+    c[ImGuiCol_TitleBgActive] = ImVec4(0.20f, 0.42f, 0.72f, 1.00f);
+    c[ImGuiCol_TitleBgCollapsed] = accent_deep;
+    c[ImGuiCol_MenuBarBg] = ImVec4(0.07f, 0.12f, 0.20f, 1.00f);
+    c[ImGuiCol_ScrollbarBg] = ImVec4(0.05f, 0.09f, 0.15f, 0.60f);
+    c[ImGuiCol_ScrollbarGrab] = accent_deep;
+    c[ImGuiCol_ScrollbarGrabHovered] = accent;
+    c[ImGuiCol_ScrollbarGrabActive] = accent_soft;
+    c[ImGuiCol_CheckMark] = accent_soft;
+    c[ImGuiCol_SliderGrab] = accent;
+    c[ImGuiCol_SliderGrabActive] = accent_soft;
+    c[ImGuiCol_Button] = accent_deep;
+    c[ImGuiCol_ButtonHovered] = ImVec4(0.26f, 0.50f, 0.82f, 1.00f);
+    c[ImGuiCol_ButtonActive] = accent;
+    c[ImGuiCol_Header] = accent_deep;
+    c[ImGuiCol_HeaderHovered] = ImVec4(0.26f, 0.50f, 0.82f, 1.00f);
+    c[ImGuiCol_HeaderActive] = accent;
+    c[ImGuiCol_Separator] = line;
+    c[ImGuiCol_SeparatorHovered] = accent;
+    c[ImGuiCol_SeparatorActive] = accent_soft;
+    c[ImGuiCol_ResizeGrip] = ImVec4(0.24f, 0.42f, 0.68f, 0.45f);
+    c[ImGuiCol_ResizeGripHovered] = accent;
+    c[ImGuiCol_ResizeGripActive] = accent_soft;
+    c[ImGuiCol_PlotHistogram] = accent;
+    c[ImGuiCol_TextSelectedBg] = ImVec4(0.33f, 0.63f, 1.00f, 0.35f);
   }
 
   // Add the curated graphics menu on top of the SDK overlays. ReXApp has
@@ -175,11 +292,17 @@ class BfbcApp : public rex::ReXApp {
     rex::ui::RegisterBind("bfbc_bind_graphics", "F5", "Toggle bfbc graphics settings",
                           [this] {
                             if (graphics_dialog_) {
-                              graphics_dialog_.reset();
+                              CloseGraphicsDialog();
                               return;
                             }
+                            // The F5 field-of-view option lives in config.zz,
+                            // which sits under the game data root.
+                            const std::filesystem::path config_zz =
+                                game_data_root().empty()
+                                    ? std::filesystem::path()
+                                    : game_data_root() / "dist" / "xenon" / "config.zz";
                             graphics_dialog_ = std::make_unique<bfbc::GraphicsDialog>(
-                                imgui_drawer(), config_path_,
+                                imgui_drawer(), config_path_, config_zz,
                                 [this]() -> std::pair<uint32_t, uint32_t> {
                                   if (!window()) return {0, 0};
                                   return {window()->GetActualPhysicalWidth(),
@@ -189,14 +312,24 @@ class BfbcApp : public rex::ReXApp {
                                   // Deferred so the dialog is not destroyed
                                   // from inside its own OnDraw.
                                   app_context().CallInUIThread(
-                                      [this] { graphics_dialog_.reset(); });
+                                      [this] { CloseGraphicsDialog(); });
                                 });
+                            // Mouse look (mnk_mouse) locks the pointer to the
+                            // window and hides it. The SDK only lifts that lock
+                            // for its own overlays, so with just this dialog open
+                            // the pointer stayed captured and invisible: the
+                            // menu could not be clicked. The gate is global in
+                            // the MnK driver, so clearing it makes the driver
+                            // release the capture and show the cursor again.
+                            rex::input::mnk::SetMouseLookActive(false);
                           });
   }
 
   void OnShutdown() override {
     rex::ui::UnregisterBind("bfbc_bind_graphics");
     graphics_dialog_.reset();
+    // Never leave the driver holding a pointer lock for a dialog that is gone.
+    rex::input::mnk::SetMouseLookActive(true);
   }
 
   // Override virtual hooks for customization:
@@ -209,6 +342,74 @@ class BfbcApp : public rex::ReXApp {
   // CreateAchievementNotificationDialog() override;
 
  private:
+  // Sets a keyboard/mouse binding unless bfbc.toml already stores one. The
+  // config is read after OnConfigurePaths, so anything saved there has to win
+  // over these defaults; the file itself is the only reliable way to tell at
+  // this point, because every flag still reports Source::kDefault here.
+  static std::string Trim(const std::string& text) {
+    const size_t first = text.find_first_not_of(" \t\r\n\"");
+    if (first == std::string::npos) {
+      return {};
+    }
+    const size_t last = text.find_last_not_of(" \t\r\n\"");
+    return text.substr(first, last - first + 1);
+  }
+
+  // Pushes every keybind_* the config file stores, so a binding saved from the
+  // F5 menu survives a restart instead of being replaced by a default.
+  void ApplySavedKeyBinds() {
+    if (config_path_.empty()) {
+      return;
+    }
+    std::ifstream in(config_path_);
+    if (!in) {
+      return;
+    }
+    std::string line;
+    while (std::getline(in, line)) {
+      const size_t eq = line.find('=');
+      if (eq == std::string::npos) {
+        continue;
+      }
+      const std::string name = Trim(line.substr(0, eq));
+      if (name.rfind("keybind_", 0) != 0) {
+        continue;
+      }
+      if (rex::cvar::GetFlagInfo(name.c_str()) == nullptr) {
+        continue;
+      }
+      const std::string value = Trim(line.substr(eq + 1));
+      if (rex::cvar::SetFlagByName(name.c_str(), value)) {
+        REXLOG_INFO("Input: {} = '{}' (config)", name, value);
+      } else {
+        REXLOG_WARN("Input: saved binding {} = '{}' rejected by the runtime", name, value);
+      }
+    }
+  }
+
+  void ApplyDefaultBind(const char* name, const char* value) {
+    if (rex::cvar::GetFlagInfo(name) == nullptr) {
+      return;
+    }
+    bool saved_present = false;
+    const std::string saved = ReadConfigValue(config_path_, name, &saved_present);
+    if (saved_present) {
+      REXLOG_INFO("Input: {} kept from the config ('{}')", name, saved);
+      return;
+    }
+    if (rex::cvar::SetFlagByName(name, value)) {
+      REXLOG_INFO("Input: {} defaulted to '{}'", name, value);
+    } else {
+      REXLOG_WARN("Input: could not set the default for {}", name);
+    }
+  }
+
+  // Closes the F5 dialog and gives the pointer back to the game's mouse look.
+  void CloseGraphicsDialog() {
+    graphics_dialog_.reset();
+    rex::input::mnk::SetMouseLookActive(true);
+  }
+
   // Loads rexgpu-<name>.dll only to run its cvar registration. The SDK loads
   // the same module again (reference-counted) to create the graphics system.
   static void PreloadPluginDll(const std::string& name) {
@@ -227,7 +428,11 @@ class BfbcApp : public rex::ReXApp {
   }
 
   // Minimal reader for the flat "key = value" config the SDK writes.
-  static std::string ReadConfigValue(const std::filesystem::path& path, std::string_view key) {
+  static std::string ReadConfigValue(const std::filesystem::path& path, std::string_view key,
+                                     bool* found = nullptr) {
+    if (found != nullptr) {
+      *found = false;
+    }
     if (path.empty()) {
       return {};
     }
@@ -250,6 +455,9 @@ class BfbcApp : public rex::ReXApp {
       name = name.substr(first, last - first + 1);
       if (name != key) {
         continue;
+      }
+      if (found != nullptr) {
+        *found = true;
       }
       std::string value = line.substr(eq + 1);
       const size_t vfirst = value.find_first_not_of(" \t\r\"");

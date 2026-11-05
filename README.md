@@ -17,8 +17,11 @@ generated from it (`game/` and `generated/` are ignored; see below).
 | `CMakeLists.txt` | Builds `bfbc.exe` (WIN32) and stages the GPU plugin plus a linker map |
 | `bfbc_manifest.toml` | Recompilation manifest: entry point, `setjmp/longjmp`, hand-discovered function entries |
 | `src/main.cpp` | Registers the application (`REX_DEFINE_APP`) |
-| `src/bfbc_app.h` | App hooks: launch defaults, GPU plugin preload, mouse/keyboard driver |
-| `src/bfbc_graphics.h` | F5 overlay: display, resolution, VSync, filtering, mouse sensitivity, key bindings |
+| `src/bfbc_app.h` | App hooks: launch defaults, GPU plugin preload, startup graphics values, input factory |
+| `src/bfbc_graphics.h` | F5 overlay: display, resolution, VSync, frame cap, filtering, lighting/compatibility, mouse, key bindings |
+| `src/bfbc_frame.h` / `.cpp` | Frame-rate cap paced at the guest's per-frame `VdSwap` import; owns `bfbc_fps_limit` |
+| `src/bfbc_configzip.h` | Reads and rewrites `Render.ForceFov` inside `config.zz` for the F5 field-of-view slider |
+| `src/bfbc_mouse.h` / `.cpp` | Mouse → right-stick shaping layer, and the input system that installs it |
 | `src/bfbc_patches.cpp` | Stubs for the SDK's `XeKeys*` licence-signature functions |
 | `build.ps1` | Full build: configure → codegen → branch repair → Ninja |
 | `build/fix_gen_branches.ps1` | Rewrites codegen branches that become `REX_FATAL` although their label exists |
@@ -88,12 +91,34 @@ A prebuilt Windows package is published under
    after `bfbc.toml` has been read. Saved `draw_resolution_scale_x/y` values were
    therefore dropped and the render-target cache was always built at 1×. The DLL is now
    preloaded so the cvars exist, the saved values are pushed in, and only then is the
-   graphics system created.
-3. **Mouse and keyboard** (`OnPostSetup`): registers the SDK's `MnkInputDriver`
-   (WASD movement, mouse as the right stick, pad buttons on the keyboard).
+   graphics system created. The renderer switches the menu no longer edits (they stay in
+   `bfbc.toml`) take the same path, so they are in place before any render target or
+   resolve pipeline is built.
+3. **Mouse and keyboard** (`OnPreSetup` → `CreateShapedInputSystem`, `src/bfbc_mouse.cpp`):
+   the SDK's default input system always registers its own `MnkInputDriver`, and a second
+   keyboard/mouse driver cannot take over — `MnkInputDriver` reports one constant device
+   handle and `InputSystem::DriverForDevice()` resolves that handle to the first driver
+   that reported it. A wrapper registered next to it was consequently never polled, so
+   `bfbc_mouse_gain/curve/deadzone` never applied. A custom `RuntimeConfig::input_factory`
+   now builds the same system (SDL or XInput pads, NOP fallback) with the shaping driver in
+   place of the SDK's: gain, response curve and deadzone are applied to the right stick
+   after the driver, live, and the driver honours the runtime's active gate. The left
+   mouse button fires and the right one aims out of the box: the SDK records mouse
+   buttons as the virtual keys `LMB`/`RMB`, so they are bound to the pad's triggers
+   (`keybind_right_trigger` / `keybind_left_trigger`) unless `bfbc.toml` already stores
+   a binding for them. The shipped layout is A=F, B=C/Ctrl, X=R, LB=Q, RB=2, RT=LMB,
+   LT=RMB and the d-pad on the arrow keys. Bindings are registered by the input module
+   after the SDK has read `bfbc.toml`, so `OnConfigurePaths` pushes the file's
+   `keybind_*` values itself before filling in any that are missing; otherwise every
+   launch silently used the SDK defaults. Binding rows in F5 capture the next press
+   instead of taking typed text, so mouse buttons (`LMB`/`RMB`/`MMB`), `Shift`,
+   `Control`, `Alt` and the arrow keys can be bound; the names written are the ones the
+   runtime's key parser accepts.
 4. **F5 overlay** (`bfbc_graphics.h`): display mode, output resolution, internal
-   resolution, VSync, anisotropy, shader compilation, mouse sensitivity and every
-   `keybind_*` — all saved to `bfbc.toml`.
+   resolution, VSync, frame rate limit, anisotropy, shader compilation, mouse sensitivity
+   and every `keybind_*` — all saved to `bfbc.toml`; the field-of-view slider is the
+   exception, written into `config.zz`
+   because the engine only reads that value at boot.
 5. **`bfbc_patches.cpp`**: `XeKeysConsolePrivateKeySign` and
    `XeKeysConsoleSignatureVerification` report success instead of 0, otherwise the
    title aborts on its disc check.
@@ -105,12 +130,48 @@ A prebuilt Windows package is published under
 
 ## Known limitations
 
-- **No frame limiter**: SDK 0.10.0 exposes none, and `video_mode_refresh_rate` was
-  measured to have no effect on pacing. VSync (display rate) or nothing.
+- **Frame cap is host-side pacing**: SDK 0.10.0 exposes no limiter and
+  `video_mode_refresh_rate` was measured to have no effect on pacing, so `bfbc_frame.cpp`
+  wraps the guest's per-frame `VdSwap` import (the only once-per-frame point on the guest
+  thread) and sleeps out the rest of the frame there. `F5 → Frame rate limit`
+  (`bfbc_fps_limit`, 0 = uncapped) applies immediately and is saved to `bfbc.toml`; VSync
+  still wins whenever the display rate is the lower of the two.
+- **Field of view is a launch setting**: the engine reads `Render.ForceFov` from the
+  `Game.cfg` override block at boot, so a running session cannot change it. F5 →
+  Rendering is a 45–120° slider behind *Override field of view*; **Apply & save** rewrites
+  `config.zz` (only `Game.cfg` is replaced, every other entry is copied byte for byte, and
+  the new archive is re-parsed and compared before the file on disk is touched), reports
+  "restart required", and the stored value is read back the next time the menu opens. The
+  same value is reachable from the command line with
+  `python tools\config_patch.py fov game\dist\xenon\config.zz 78` (`off` removes it). The
+  key is from the engine's own setting table in the decompressed image, where `ForceFov`
+  sits in the same class as `Render.PerfOverlayEnable`, which the config already drives.
 - **Internal resolution changes** are saved to `bfbc.toml` and applied on the next
   launch, because the render-target cache is created once at startup.
 - **The mouse is not raw input**: the title only reads an analog stick, so mouse look
-  emulates the right stick and follows the game's own curve. Sensitivity is tunable in F5.
+  emulates the right stick and follows the game's own curve. The shaping layer makes that
+  usable: it maps movement into `[floor, 1]` so slow aiming cannot fall inside the game's
+  own deadzone (7849 of 32767, where the stick used to produce nothing at all), and it
+  folds out the poll interval so the same hand speed turns the same amount at any frame
+  rate. `gain`, `curve`, `deadzone`, `floor` and the frame-rate switch are all in F5,
+  and the `PC aim` preset sets them to a starting point (gain 2.00, curve 0.75). A
+  shaped value that reaches full deflection is still capped there, and the game's own
+  acceleration/smoothing sits on top - true 1:1 PC aiming would mean patching its look
+  code, not feeding the stick.
+- **In-game button prompts stay Xbox 360 icons**: the title has no keyboard/mouse input
+  path at all (it never calls `XamInputGetKeystroke` or any keyboard query, and
+  `XamInputGetCapabilities` is only used to detect a wheel), and its only prompt art is the
+  360 glyph set inside the Frostbite `.fbrb` UI bundles (`menu/main`, `menu/hud`). Swapping
+  in PC-style icons means replacing textures in those bundles, not a cvar or a code switch.
+  Because the prompts follow the pad buttons, they do track the binding: with the default
+  mouse mapping, the fire prompt is the right-trigger icon.
+- **The renderer/lighting switches are config-only now**: `Lighting / Compatibility` and
+  `Shadows / depth` were removed from F5 at the owner's request, but the values they set
+  stay in `bfbc.toml` (`draw_resolution_scaled_texture_offsets`, the resolve half-pixel
+  flags, `d3d12_readback_resolve`, `depth_float24_*`, `gpu_3d_to_2d_texture`,
+  `texture_cache_memory_limit_render_to_texture`) and are still pushed before GPU init on
+  every launch, so the shadow and gamma fixes keep working. Changing one means editing
+  that file; they all take effect at startup.
 - Some optional assets produce `NtCreateFile` warnings (files absent from the disc
   image); they do not prevent startup.
 

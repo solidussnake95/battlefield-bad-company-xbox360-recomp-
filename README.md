@@ -19,8 +19,8 @@ generated from it (`game/` and `generated/` are ignored; see below).
 | `src/main.cpp` | Registers the application (`REX_DEFINE_APP`) |
 | `src/bfbc_app.h` | App hooks: launch defaults, GPU plugin preload, startup graphics values, input factory |
 | `src/bfbc_graphics.h` | F5 overlay: display, resolution, VSync, frame cap, filtering, lighting/compatibility, mouse, key bindings |
-| `src/bfbc_frame.h` / `.cpp` | Frame-rate cap paced at the guest's per-frame `VdSwap` import; owns `bfbc_fps_limit` |
-| `src/bfbc_configzip.h` | Reads and rewrites `Render.ForceFov` inside `config.zz` for the F5 field-of-view slider |
+| `src/bfbc_frame.h` / `.cpp` | Measures the guest's per-frame `VdSwap` rate and logs it (`Frame: 30.5 fps`); no limiter |
+| `src/bfbc_configzip.h` | Reads and rewrites `Render.ForceFov` and `PostProcess.FilmGrainEnable` inside `config.zz` for the F5 sliders |
 | `src/bfbc_mouse.h` / `.cpp` | Mouse → right-stick shaping layer, and the input system that installs it |
 | `src/bfbc_patches.cpp` | Stubs for the SDK's `XeKeys*` licence-signature functions |
 | `build.ps1` | Full build: configure → codegen → branch repair → Ninja |
@@ -106,8 +106,9 @@ A prebuilt Windows package is published under
    mouse button fires and the right one aims out of the box: the SDK records mouse
    buttons as the virtual keys `LMB`/`RMB`, so they are bound to the pad's triggers
    (`keybind_right_trigger` / `keybind_left_trigger`) unless `bfbc.toml` already stores
-   a binding for them. The shipped layout is A=F, B=C/Ctrl, X=R, LB=Q, RB=2, RT=LMB,
-   LT=RMB and the d-pad on the arrow keys. Bindings are registered by the input module
+   a binding for them. The shipped layout is A=Space, B=F/X (exit a vehicle), X=R,
+   LB=Q, RB=2, RT=LMB, LT=RMB, WASD on the left stick and the d-pad on the arrow keys.
+   Bindings are registered by the input module
    after the SDK has read `bfbc.toml`, so `OnConfigurePaths` pushes the file's
    `keybind_*` values itself before filling in any that are missing; otherwise every
    launch silently used the SDK defaults. Binding rows in F5 capture the next press
@@ -115,10 +116,10 @@ A prebuilt Windows package is published under
    `Control`, `Alt` and the arrow keys can be bound; the names written are the ones the
    runtime's key parser accepts.
 4. **F5 overlay** (`bfbc_graphics.h`): display mode, output resolution, internal
-   resolution, VSync, frame rate limit, anisotropy, shader compilation, mouse sensitivity
-   and every `keybind_*` — all saved to `bfbc.toml`; the field-of-view slider is the
-   exception, written into `config.zz`
-   because the engine only reads that value at boot.
+   resolution, VSync, anisotropy, shader compilation, mouse gain/vertical gain/curve
+   and every `keybind_*` — all saved to `bfbc.toml`; the field-of-view slider and the
+   film-grain switch are the exceptions, written into `config.zz` because the engine
+   only reads those values at boot.
 5. **`bfbc_patches.cpp`**: `XeKeysConsolePrivateKeySign` and
    `XeKeysConsoleSignatureVerification` report success instead of 0, otherwise the
    title aborts on its disc check.
@@ -130,12 +131,28 @@ A prebuilt Windows package is published under
 
 ## Known limitations
 
-- **Frame cap is host-side pacing**: SDK 0.10.0 exposes no limiter and
-  `video_mode_refresh_rate` was measured to have no effect on pacing, so `bfbc_frame.cpp`
-  wraps the guest's per-frame `VdSwap` import (the only once-per-frame point on the guest
-  thread) and sleeps out the rest of the frame there. `F5 → Frame rate limit`
-  (`bfbc_fps_limit`, 0 = uncapped) applies immediately and is saved to `bfbc.toml`; VSync
-  still wins whenever the display rate is the lower of the two.
+- **The game runs at its own ~30 Hz, and there is no frame limiter**: the engine's loop is
+  fixed at 30.0 frames per second regardless of what the host can do, so a cap can
+  only make it slower. The limiter was therefore removed, and `bfbc.toml` files that
+  still contain `bfbc_fps_limit` keep working (the key is accepted and ignored).
+  `bfbc_frame.cpp` logs the measured rate and the shortest/longest gap between swaps
+  every two seconds to `bin\logs\bfbc_NNN.log` as `Frame: 30.0 fps (gap 32.7-33.9 ms)`;
+  earlier builds logged 30.5 here because the counter included the first frame of the
+  window in the rate but not in the elapsed time. GPU driver overlays show a much higher
+  number because the host presents the same image many times per second when VSync is off.
+  The gap range is the useful number: a steady rate with a wide range is what reads as
+  stutter on screen, so keep VSync on (a 30.0 fps source then occupies exactly two
+  refreshes of a 60 Hz display).
+- **A higher frame rate is not available, and frame rate equals game speed**: the
+  engine advances one fixed simulation step per frame, so running the render loop
+  faster runs the whole game faster. Measured: `Game.MaxFps 60` is quantised back to
+  30, `Game.MaxFps 0` removes the engine's pacing entirely (~500 fps), and
+  `video_mode_refresh_rate` does not affect the rate. What does work is lifting the
+  engine cap and pacing the swap in `bfbc_frame.cpp`: `bfbc_pace_fps = 60` holds a
+  measured 60.0 fps (16.4-16.9 ms gaps) — but at double game speed, because the
+  simulation step does not scale. A usable 60 fps mod therefore needs the per-frame
+  simulation step itself patched to half, which is engine code work, not a setting.
+  `bfbc_pace_fps = 0` (the default) leaves the engine's own 30 fps pacing in charge.
 - **Field of view is a launch setting**: the engine reads `Render.ForceFov` from the
   `Game.cfg` override block at boot, so a running session cannot change it. F5 →
   Rendering is a 45–120° slider behind *Override field of view*; **Apply & save** rewrites
@@ -146,6 +163,12 @@ A prebuilt Windows package is published under
   `python tools\config_patch.py fov game\dist\xenon\config.zz 78` (`off` removes it). The
   key is from the engine's own setting table in the decompressed image, where `ForceFov`
   sits in the same class as `Render.PerfOverlayEnable`, which the config already drives.
+- **Film grain is off by default and is a launch setting**: F5 → Rendering has a
+  *Film grain* checkbox backed by `PostProcess.FilmGrainEnable` in `Game.cfg`. The
+  engine reads it at boot, so toggling it and pressing **Apply & save** rewrites
+  `config.zz` and reports "restart required". The port ships with the value `false`;
+  the same switch is reachable through `python tools\config_patch.py apply` profiles,
+  which now keep it off.
 - **Internal resolution changes** are saved to `bfbc.toml` and applied on the next
   launch, because the render-target cache is created once at startup.
 - **The mouse is not raw input**: the title only reads an analog stick, so mouse look
@@ -158,6 +181,13 @@ A prebuilt Windows package is published under
   shaped value that reaches full deflection is still capped there, and the game's own
   acceleration/smoothing sits on top - true 1:1 PC aiming would mean patching its look
   code, not feeding the stick.
+- **Shift, Ctrl and Alt work as action keys**: the SDK's MnK driver matches modifier
+  masks exactly, which means a bare `Shift` binding can never fire (holding the key
+  makes the live mask non-zero while the binding asks for zero). F5 and the startup
+  config loader therefore store it as `Shift+Shift` (`Control+Control`, `Alt+Alt`) and
+  the row still displays `Shift` / `Control` / `Alt`. Combined bindings such as the
+  default `Shift+Up` d-pad mapping are unchanged, and `Ctrl` / `LeftCtrl` values saved
+  by older builds are rewritten to the working form on load.
 - **In-game button prompts stay Xbox 360 icons**: the title has no keyboard/mouse input
   path at all (it never calls `XamInputGetKeystroke` or any keyboard query, and
   `XamInputGetCapabilities` is only used to detect a wheel), and its only prompt art is the

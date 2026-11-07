@@ -157,10 +157,32 @@ class BfbcApp : public rex::ReXApp {
         "depth_float24_round",
         "depth_transfer_not_equal_test",
         "gpu_3d_to_2d_texture",
+        // Which D3D12 render target emulation the plugin builds: "rtv" is host
+        // render targets with fixed-function blending, "rov" does blending and
+        // depth/stencil in the pixel shader against a 10 MB EDRAM emulation.
+        // The host path has to approximate the 360's 10_10_10_2 formats, which
+        // leaves too few alpha bits for smooth blending (smoke and other
+        // translucent particles come out hard-edged and near-opaque), so the
+        // path is chosen here, before the render target cache exists.
+        "render_target_path_d3d12",
+        // The ROV path translates the draw's blend/depth state into a pixel
+        // shader, so each new state combination costs a pipeline compile. Doing
+        // that on the render thread lands as multi-second hitches the first time
+        // a new effect (smoke, fire, decals) shows up, so compile off-thread.
+        "async_shader_compilation",
+        // 8_8_8_8_GAMMA render targets: the plugin's UNORM16 path has a
+        // conversion-direction slip in this SDK generation, which lands as a
+        // uniformly dark image. Kept here so it can be pushed before GPU init.
+        "gamma_render_target_as_unorm16",
         "texture_cache_memory_limit_render_to_texture",
+        "texture_cache_memory_limit_soft",
+        "texture_cache_memory_limit_hard",
     };
     for (const char* flag : kStartupOnlyFlags) {
-      const std::string value = ReadConfigValue(config_path_, flag);
+      std::string value = ReadConfigValue(config_path_, flag);
+      if (value.empty()) {
+        value = DefaultStartupValue(flag);
+      }
       if (value.empty()) {
         continue;
       }
@@ -346,6 +368,15 @@ class BfbcApp : public rex::ReXApp {
   // config is read after OnConfigurePaths, so anything saved there has to win
   // over these defaults; the file itself is the only reliable way to tell at
   // this point, because every flag still reports Source::kDefault here.
+  // Binding names go through the shared helpers in bfbc_graphics.h: the
+  // runtime's parser is case-sensitive, and the MnK driver cannot fire a bare
+  // modifier (holding Shift makes its required-mask check fail), so the helper
+  // also expands "Shift" to "Shift+Shift". Old configs that stored "LeftCtrl"
+  // or "Ctrl" are converted the same way.
+  static std::string NormalizeBindValue(const std::string& raw) {
+    return bfbc::NormalizeBindValue(raw);
+  }
+
   static std::string Trim(const std::string& text) {
     const size_t first = text.find_first_not_of(" \t\r\n\"");
     if (first == std::string::npos) {
@@ -378,7 +409,8 @@ class BfbcApp : public rex::ReXApp {
       if (rex::cvar::GetFlagInfo(name.c_str()) == nullptr) {
         continue;
       }
-      const std::string value = Trim(line.substr(eq + 1));
+      const std::string value =
+          bfbc::AddModifierVariants(NormalizeBindValue(line.substr(eq + 1)));
       if (rex::cvar::SetFlagByName(name.c_str(), value)) {
         REXLOG_INFO("Input: {} = '{}' (config)", name, value);
       } else {
@@ -397,8 +429,9 @@ class BfbcApp : public rex::ReXApp {
       REXLOG_INFO("Input: {} kept from the config ('{}')", name, saved);
       return;
     }
-    if (rex::cvar::SetFlagByName(name, value)) {
-      REXLOG_INFO("Input: {} defaulted to '{}'", name, value);
+    const std::string normalized = bfbc::AddModifierVariants(NormalizeBindValue(value));
+    if (rex::cvar::SetFlagByName(name, normalized)) {
+      REXLOG_INFO("Input: {} defaulted to '{}'", name, normalized);
     } else {
       REXLOG_WARN("Input: could not set the default for {}", name);
     }
@@ -425,6 +458,45 @@ class BfbcApp : public rex::ReXApp {
 #else
     (void)name;
 #endif
+  }
+
+  // VRAM budgets used when bfbc.toml does not set them.
+  //
+  // The plugin's own defaults target a 720p-native title: 384/768 MB of texture
+  // cache and 128 MB for render targets. At 3x internal resolution one colour
+  // render target is already ~33 MB (a 16-bit HDR one twice that), so the
+  // render-target budget holds only a handful of surfaces and the game evicts
+  // and re-resolves them continuously. Each eviction is a resolve plus a clear
+  // on the GPU, which is exactly what the long frames behind the stutter are;
+  // it also means the shadow map and the HDR chain keep getting thrown away.
+  // These values are only large numbers of megabytes, not settings that change
+  // the picture, so a machine with less VRAM can lower them in bfbc.toml.
+  struct StartupDefault {
+    const char* name;
+    const char* value;
+  };
+  // The render-target budget is capped at 256 MB by the plugin itself (it
+  // rejects larger values and keeps its default), so that is the most the
+  // eviction rate can be reduced without touching the plugin.
+  static constexpr StartupDefault kStartupDefaults[] = {
+      // The 360's 8_8_8_8_GAMMA render targets: the plugin's UNORM16 conversion
+      // path is inverted in this SDK generation, so leaving it on crushes every
+      // gamma-space surface and the whole world renders as if unlit, while the
+      // HUD (drawn through a different path) stays bright. This is the single
+      // biggest visual fix in the package.
+      {"gamma_render_target_as_unorm16", "false"},
+      {"texture_cache_memory_limit_render_to_texture", "256"},
+      {"texture_cache_memory_limit_soft", "1024"},
+      {"texture_cache_memory_limit_hard", "2048"},
+  };
+
+  static std::string DefaultStartupValue(const char* name) {
+    for (const StartupDefault& entry : kStartupDefaults) {
+      if (std::string_view(entry.name) == name) {
+        return entry.value;
+      }
+    }
+    return {};
   }
 
   // Minimal reader for the flat "key = value" config the SDK writes.

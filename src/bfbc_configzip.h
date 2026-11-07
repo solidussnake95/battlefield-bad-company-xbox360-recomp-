@@ -14,11 +14,13 @@
 #pragma once
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <numeric>
 #include <string>
 #include <string_view>
@@ -35,6 +37,8 @@ inline constexpr const char* kEnd = "-- bfbc port overrides end";
 inline constexpr const char* kFovKey = "Render.ForceFov";
 inline constexpr int kFovMin = 45;
 inline constexpr int kFovMax = 120;
+// Film grain is a plain Lua assignment in Game.cfg, not an applySettings entry.
+inline constexpr const char* kGrainKey = "PostProcess.FilmGrainEnable";
 
 // ---------------------------------------------------------------------------
 // Byte helpers
@@ -382,17 +386,145 @@ inline FovState ReadFov(const std::filesystem::path& config_zz) {
   return state;
 }
 
-// degrees <= 0 removes the override and leaves the engine's own value.
-inline bool WriteFov(const std::filesystem::path& config_zz, int degrees, std::string* error) {
+// ---------------------------------------------------------------------------
+// Film grain
+// ---------------------------------------------------------------------------
+
+struct GrainState {
+  // False when Game.cfg never mentions the setting; the dialog then shows the
+  // shipped default (grain off).
+  bool present = false;
+  bool enabled = true;
+};
+
+// Recognises both shapes the setting can take in Game.cfg:
+// `PostProcess.FilmGrainEnable = true` (plain Lua) and the applySettings
+// key/value form `PostProcess.FilmGrainEnable true`.
+inline bool ParseGrainLine(const std::string& raw, bool* enabled) {
+  const size_t begin = raw.find_first_not_of(" \t");
+  const size_t end = raw.find_last_not_of(" \t\r\n");
+  if (begin == std::string::npos || end == std::string::npos || end < begin) {
+    return false;
+  }
+  const std::string line = raw.substr(begin, end - begin + 1);
+  if (line.rfind(kGrainKey, 0) != 0) {
+    return false;
+  }
+  size_t pos = std::strlen(kGrainKey);
+  if (pos >= line.size() || (line[pos] != '=' && line[pos] != ' ' && line[pos] != '\t')) {
+    return false;
+  }
+  pos = line.find_first_not_of("= \t", pos);
+  if (pos == std::string::npos) {
+    return false;
+  }
+  const size_t stop = line.find_first_of(" \t,;", pos);
+  std::string value =
+      line.substr(pos, stop == std::string::npos ? std::string::npos : stop - pos);
+  for (char& c : value) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  if (value == "true" || value == "1" || value == "on") {
+    *enabled = true;
+    return true;
+  }
+  if (value == "false" || value == "0" || value == "off") {
+    *enabled = false;
+    return true;
+  }
+  return false;
+}
+
+inline GrainState ReadGrain(const std::filesystem::path& config_zz) {
+  GrainState state;
+  Archive archive;
+  std::string error;
+  if (config_zz.empty() || !LoadArchive(config_zz, &archive, &error)) {
+    return state;
+  }
+  for (const Entry& entry : archive.entries) {
+    if (entry.name != "Game.cfg") {
+      continue;
+    }
+    std::vector<uint8_t> data;
+    if (!ReadEntry(archive, entry, &data, &error)) {
+      return state;
+    }
+    const std::string text(data.begin(), data.end());
+    // Game.cfg is Lua: the last assignment wins, so keep scanning after a hit
+    // (an applySettings entry earlier in the file may be overridden later).
+    size_t pos = 0;
+    while (pos < text.size()) {
+      const size_t nl = text.find('\n', pos);
+      const size_t stop = (nl == std::string::npos) ? text.size() : nl;
+      bool enabled = false;
+      if (ParseGrainLine(text.substr(pos, stop - pos), &enabled)) {
+        state.enabled = enabled;
+        state.present = true;
+      }
+      if (nl == std::string::npos) {
+        break;
+      }
+      pos = nl + 1;
+    }
+    return state;
+  }
+  return state;
+}
+
+// Rewrites every grain assignment in `text`; appends one when no line sets it.
+inline std::string WithGrain(const std::string& text, bool enabled) {
+  const std::string value = enabled ? "true" : "false";
+  std::string out;
+  out.reserve(text.size() + 64);
+  bool found = false;
+  size_t pos = 0;
+  while (pos < text.size()) {
+    const size_t nl = text.find('\n', pos);
+    const size_t stop = (nl == std::string::npos) ? text.size() : nl + 1;
+    const std::string raw = text.substr(pos, stop - pos);
+    bool current = false;
+    if (ParseGrainLine(raw, &current)) {
+      const size_t first = raw.find_first_not_of(" \t");
+      const std::string indent =
+          first == std::string::npos ? std::string() : raw.substr(0, first);
+      const size_t last = raw.find_last_not_of("\r\n");
+      const std::string eol = last == std::string::npos ? std::string() : raw.substr(last + 1);
+      // Keep the style the file already uses: applySettings entries are
+      // space-separated, Lua assignments use '='.
+      const size_t after = first + std::strlen(kGrainKey);
+      const size_t marker = raw.find_first_not_of(" \t", after);
+      const bool lua = marker != std::string::npos && raw[marker] == '=';
+      out += indent + kGrainKey + (lua ? " = " : " ") + value + eol;
+      found = true;
+    } else {
+      out += raw;
+    }
+    pos = stop;
+  }
+  if (!found) {
+    if (!out.empty() && out.back() != '\n') {
+      out += '\n';
+    }
+    out += std::string(kGrainKey) + " = " + value + "\n";
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Archive rewrite
+// ---------------------------------------------------------------------------
+
+// Applies `transform` to Game.cfg and writes the whole archive back. Every
+// other entry is copied byte for byte (each one's local region, so trailing
+// data descriptors survive) and the result is re-parsed and diffed before the
+// real file is touched. Returns true without writing when nothing changed.
+inline bool WriteGameCfg(
+    const std::filesystem::path& config_zz,
+    const std::function<std::string(const std::string&)>& transform, std::string* error) {
   if (config_zz.empty()) {
     *error = "no config.zz path";
     return false;
-  }
-  if (degrees < 0) {
-    degrees = 0;
-  }
-  if (degrees > 0) {
-    degrees = std::clamp(degrees, kFovMin, kFovMax);
   }
 
   Archive archive;
@@ -417,8 +549,7 @@ inline bool WriteFov(const std::filesystem::path& config_zz, int degrees, std::s
     return false;
   }
   const std::string old_text(game_cfg_data.begin(), game_cfg_data.end());
-  const std::string new_text =
-      ReplaceBlock(old_text, WithFov(BlockLines(old_text), degrees > 0, degrees));
+  const std::string new_text = transform(old_text);
   if (new_text == old_text) {
     return true;  // already stored
   }
@@ -598,6 +729,27 @@ inline bool WriteFov(const std::filesystem::path& config_zz, int degrees, std::s
     return false;
   }
   return true;
+}
+
+// degrees <= 0 removes the override and leaves the engine's own value.
+inline bool WriteFov(const std::filesystem::path& config_zz, int degrees, std::string* error) {
+  if (degrees < 0) {
+    degrees = 0;
+  }
+  if (degrees > 0) {
+    degrees = std::clamp(degrees, kFovMin, kFovMax);
+  }
+  return WriteGameCfg(
+      config_zz,
+      [degrees](const std::string& text) {
+        return ReplaceBlock(text, WithFov(BlockLines(text), degrees > 0, degrees));
+      },
+      error);
+}
+
+inline bool WriteGrain(const std::filesystem::path& config_zz, bool enabled, std::string* error) {
+  return WriteGameCfg(
+      config_zz, [enabled](const std::string& text) { return WithGrain(text, enabled); }, error);
 }
 
 }  // namespace bfbc::configzip

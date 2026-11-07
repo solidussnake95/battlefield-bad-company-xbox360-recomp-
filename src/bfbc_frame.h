@@ -1,4 +1,4 @@
-// bfbc - frame pacing and per-frame guest patches.
+// bfbc - per-frame guest work (frame rate measurement, FOV patch).
 //
 // The host presents when the guest swaps, and the guest calls the xboxkrnl
 // VdSwap import exactly once per presented frame. Wrapping that import (see
@@ -15,16 +15,13 @@
 
 #include <rex/cvar.h>
 
-// Frame rate cap in frames per second; 0 leaves the guest uncapped.
-REXCVAR_DECLARE(int32_t, bfbc_fps_limit);
-
 // Scale applied to the loaded scene field of view; 1.0 leaves it untouched.
 REXCVAR_DECLARE(double, bfbc_fov_scale);
 
 namespace bfbc {
 
-// Called from the VdSwap wrapper after the real import has run: sleeps out the
-// rest of the frame when a cap is active and applies the FOV patch.
+// Called from the VdSwap wrapper after the real import has run: logs the
+// measured guest frame rate and applies the FOV patch.
 void OnGuestFrame();
 
 }  // namespace bfbc

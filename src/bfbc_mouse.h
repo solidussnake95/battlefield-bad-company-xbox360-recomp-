@@ -33,10 +33,13 @@
 
 // Defined in src/bfbc_mouse.cpp.
 REXCVAR_DECLARE(double, bfbc_mouse_gain);
+REXCVAR_DECLARE(double, bfbc_mouse_vertical);
 REXCVAR_DECLARE(double, bfbc_mouse_curve);
 REXCVAR_DECLARE(double, bfbc_mouse_deadzone);
 REXCVAR_DECLARE(double, bfbc_mouse_floor);
 REXCVAR_DECLARE(bool, bfbc_mouse_time_normalize);
+REXCVAR_DECLARE(double, bfbc_mouse_smooth);
+REXCVAR_DECLARE(bool, bfbc_mouse_dither);
 REXCVAR_DECLARE(bool, bfbc_mouse_debug);
 
 namespace bfbc {
@@ -44,6 +47,19 @@ namespace bfbc {
 // X_RESULT_SUCCESS / X_STATUS_SUCCESS are macros that expand to the unqualified
 // types, so they only compile inside namespace rex. Use these instead.
 inline constexpr rex::X_RESULT kResultSuccess = 0;
+
+// Last poll's numbers, written by the driver and read by the F5 menu so the
+// mouse can be tuned while looking at what it is actually sending.
+struct MouseTelemetry {
+  std::atomic<int32_t> raw_x{0};
+  std::atomic<int32_t> raw_y{0};
+  std::atomic<int32_t> out_x{0};
+  std::atomic<int32_t> out_y{0};
+  std::atomic<int32_t> polls{0};
+};
+
+// Defined in src/bfbc_mouse.cpp.
+MouseTelemetry& MouseState();
 
 class MouseShapeDriver final : public rex::input::InputDriver {
  public:
@@ -95,21 +111,33 @@ class MouseShapeDriver final : public rex::input::InputDriver {
 
  private:
   static constexpr float kFullScale = 32767.0f;
+  // Below this the decayed rate is indistinguishable from the pad's centre, so
+  // the stick is released instead of leaving a permanent slow drift.
+  static constexpr float kSmoothCutoff = 0.02f;
 
   // The guest does not turn by the stick value itself, it turns at a speed
   // derived from how far the stick is from centre - and it ignores everything
   // inside its own deadzone, which the runtime advertises as the XInput
   // threshold (7849 of 32767). Passing the frame's mouse delta straight through
   // therefore left a hole: slow aiming produced no movement at all, and a flick
-  // jumped from nothing to fast. Mapping the delta into [floor, 1] keeps every
-  // movement above that hole and makes the response monotonic, which is what
-  // rate-based aiming needs to feel like a mouse.
-  static float ShapeAxis(float value, float gain, float curve, float deadzone, float floor) {
+  // jumped from nothing to fast.
+  //
+  // The shaped value is the turn *rate* the guest should use this frame, so it
+  // has to follow mouse speed, not mouse distance. `value` is the per-poll
+  // deflection, already normalised by the poll interval; `gain` converts it to
+  // the [0, 1] range the stick covers. Anything the guest would round off as
+  // "inside the deadzone" is lifted to `floor`, and with dithering enabled a
+  // rate below that floor is emitted every Nth poll instead, which is the only
+  // way to aim slower than the game's own deadzone allows.
+  static float ShapeAxis(float value, float gain, float curve, float deadzone, float floor,
+                         float& residual, bool dither) {
     if (value == 0.0f) {
+      residual = 0.0f;
       return 0.0f;
     }
     const float magnitude = std::fabs(value);
     if (magnitude <= deadzone) {
+      residual = 0.0f;
       return 0.0f;
     }
     const float span = 1.0f - deadzone;
@@ -118,8 +146,28 @@ class MouseShapeDriver final : public rex::input::InputDriver {
     if (curve != 1.0f) {
       t = std::pow(t, curve);
     }
-    const float shaped = floor + (1.0f - floor) * t;
-    return std::copysign(std::min(shaped, 1.0f), value);
+    if (t <= 0.0f) {
+      residual = 0.0f;
+      return 0.0f;
+    }
+    if (floor <= 0.0f || t >= floor) {
+      residual = 0.0f;
+      // Same mapping the layer always used above the game's deadzone: the
+      // deflection spans [floor, 1] so a movement never falls into the hole.
+      return std::copysign(std::min(floor + (1.0f - floor) * t, 1.0f), value);
+    }
+    if (!dither) {
+      return std::copysign(floor, value);
+    }
+    // Below the deadzone: accumulate the wanted rate and spend it in whole
+    // floor-sized steps, so the average turn rate follows the mouse instead of
+    // being pinned at the floor.
+    residual += t;
+    if (residual >= floor) {
+      residual -= floor;
+      return std::copysign(floor, value);
+    }
+    return 0.0f;
   }
 
   // The guest polls once per frame, so the same physical mouse speed arrives as
@@ -142,41 +190,95 @@ class MouseShapeDriver final : public rex::input::InputDriver {
     // keyboard/mouse device - the reason the shaping used to never run.
     static std::atomic<bool> announced{false};
     if (!announced.exchange(true, std::memory_order_relaxed)) {
-      REXLOG_INFO("MouseShape: right-stick shaping is live (gain={} curve={} dz={})",
+      REXLOG_INFO("MouseShape: right-stick shaping is live (gain={} curve={} dz={} smooth={})",
                   REXCVAR_GET(bfbc_mouse_gain), REXCVAR_GET(bfbc_mouse_curve),
-                  REXCVAR_GET(bfbc_mouse_deadzone));
+                  REXCVAR_GET(bfbc_mouse_deadzone), REXCVAR_GET(bfbc_mouse_smooth));
     }
 
-    const float gain = static_cast<float>(std::clamp(REXCVAR_GET(bfbc_mouse_gain), 0.05, 8.0));
+    const float gain = static_cast<float>(std::clamp(REXCVAR_GET(bfbc_mouse_gain), 0.05, 64.0));
     const float curve = static_cast<float>(std::clamp(REXCVAR_GET(bfbc_mouse_curve), 0.2, 4.0));
     const float deadzone =
         static_cast<float>(std::clamp(REXCVAR_GET(bfbc_mouse_deadzone), 0.0, 0.9));
     // Never emit a deflection the guest would round off as "inside the deadzone".
     const float floor =
         static_cast<float>(std::clamp(REXCVAR_GET(bfbc_mouse_floor) / kFullScale, 0.0, 0.9));
+    const bool dither = REXCVAR_GET(bfbc_mouse_dither);
     const bool debug = REXCVAR_GET(bfbc_mouse_debug);
 
     const int16_t raw_x = static_cast<int16_t>(state->gamepad.thumb_rx);
     const int16_t raw_y = static_cast<int16_t>(state->gamepad.thumb_ry);
-    if (raw_x == 0 && raw_y == 0) {
-      return;  // Idle: leaving the state alone is what keeps the view still.
+
+    static float residual_x = 0.0f;
+    static float residual_y = 0.0f;
+    // The shaped value is a turn rate, and the guest applies it once per frame,
+    // so a mouse that accelerates within one 33 ms frame turns the camera in a
+    // single visible step. Carrying part of the previous rate into this frame
+    // spreads that step over two or three frames; when the mouse stops the held
+    // rate decays instead of snapping the stick to centre, which is the other
+    // half of the stepping artefact.
+    static float held_x = 0.0f;
+    static float held_y = 0.0f;
+
+    int16_t out_x = raw_x;
+    int16_t out_y = raw_y;
+    float wanted_x = 0.0f;
+    float wanted_y = 0.0f;
+    if (raw_x != 0 || raw_y != 0) {
+      // Fold the poll interval out so a fast frame rate does not soften the aim.
+      float scale = 1.0f;
+      if (REXCVAR_GET(bfbc_mouse_time_normalize)) {
+        scale = PollIntervalScale();
+      }
+
+      const float shaped_x =
+          ShapeAxis(static_cast<float>(raw_x) / (kFullScale * scale), gain, curve, deadzone,
+                    floor, residual_x, dither);
+      const float shaped_y =
+          ShapeAxis(static_cast<float>(raw_y) / (kFullScale * scale), gain, curve, deadzone,
+                    floor, residual_y, dither);
+      // The game turns noticeably slower per stick unit on the vertical axis, so
+      // the vertical weight multiplies the result instead of the gain: a gain
+      // change would mostly be swallowed by the deadzone floor above, which is
+      // why an even horizontal/vertical gain never fixed the up/down weight.
+      const float vertical =
+          static_cast<float>(std::clamp(REXCVAR_GET(bfbc_mouse_vertical), 0.1, 8.0));
+      wanted_x = shaped_x;
+      wanted_y = std::clamp(shaped_y * vertical, -1.0f, 1.0f);
     }
 
-    // Fold the poll interval out so a fast frame rate does not soften the aim.
-    float scale = 1.0f;
-    if (REXCVAR_GET(bfbc_mouse_time_normalize)) {
-      scale = PollIntervalScale();
+    // 0 disables the smoothing entirely, so the raw per-poll rate is what the
+    // old behaviour sent.
+    const float keep = static_cast<float>(std::clamp(REXCVAR_GET(bfbc_mouse_smooth), 0.0, 0.9));
+    if (keep > 0.0f) {
+      held_x = keep * held_x + (1.0f - keep) * wanted_x;
+      held_y = keep * held_y + (1.0f - keep) * wanted_y;
+      if (std::fabs(held_x) < kSmoothCutoff) {
+        held_x = 0.0f;
+      }
+      if (std::fabs(held_y) < kSmoothCutoff) {
+        held_y = 0.0f;
+      }
+      wanted_x = held_x;
+      wanted_y = held_y;
+    } else {
+      held_x = 0.0f;
+      held_y = 0.0f;
     }
 
-    const float shaped_x = ShapeAxis(static_cast<float>(raw_x) / (kFullScale * scale), gain,
-                                     curve, deadzone, floor);
-    const float shaped_y = ShapeAxis(static_cast<float>(raw_y) / (kFullScale * scale), gain,
-                                     curve, deadzone, floor);
-    const int16_t out_x = static_cast<int16_t>(std::lround(shaped_x * kFullScale));
-    const int16_t out_y = static_cast<int16_t>(std::lround(shaped_y * kFullScale));
+    if (wanted_x != 0.0f || wanted_y != 0.0f) {
+      out_x = static_cast<int16_t>(std::lround(std::clamp(wanted_x, -1.0f, 1.0f) * kFullScale));
+      out_y = static_cast<int16_t>(std::lround(std::clamp(wanted_y, -1.0f, 1.0f) * kFullScale));
+      state->gamepad.thumb_rx = out_x;
+      state->gamepad.thumb_ry = out_y;
+    }
 
-    state->gamepad.thumb_rx = out_x;
-    state->gamepad.thumb_ry = out_y;
+    // Publish for the F5 menu (it runs on the UI thread).
+    MouseTelemetry& telemetry = MouseState();
+    telemetry.raw_x.store(raw_x, std::memory_order_relaxed);
+    telemetry.raw_y.store(raw_y, std::memory_order_relaxed);
+    telemetry.out_x.store(out_x, std::memory_order_relaxed);
+    telemetry.out_y.store(out_y, std::memory_order_relaxed);
+    telemetry.polls.fetch_add(1, std::memory_order_relaxed);
 
     if (debug) {
       // Throttled: the guest polls the pad every frame, and the point is to see

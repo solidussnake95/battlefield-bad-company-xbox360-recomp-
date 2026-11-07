@@ -18,8 +18,12 @@
 #include <rex/input/xinput/xinput_input_driver.h>
 #endif
 
-REXCVAR_DEFINE_DOUBLE(bfbc_mouse_gain, 1.0, "bfbc input",
+REXCVAR_DEFINE_DOUBLE(bfbc_mouse_gain, 2.0, "bfbc input",
                       "Multiplier on the right-stick deflection produced by mouse movement");
+
+REXCVAR_DEFINE_DOUBLE(bfbc_mouse_vertical, 1.8, "bfbc input",
+                      "Extra multiplier on the vertical (look up/down) stick output; the game's "
+                      "own vertical turn rate is lower than its horizontal one");
 
 REXCVAR_DEFINE_DOUBLE(bfbc_mouse_curve, 1.0, "bfbc input",
                       "Stick response curve: below 1 turns faster near the centre, above 1 finer");
@@ -36,6 +40,15 @@ REXCVAR_DEFINE_BOOL(bfbc_mouse_time_normalize, true, "bfbc input",
                     "Scale mouse movement by the poll interval so the turn rate does not depend on "
                     "frame rate");
 
+REXCVAR_DEFINE_DOUBLE(bfbc_mouse_smooth, 0.2, "bfbc input",
+                      "How much of the previous poll's turn rate is kept, so the camera does not "
+                      "step once per 30 Hz frame; 0 sends every poll's rate unchanged")
+    .range(0.0, 0.9);
+
+REXCVAR_DEFINE_BOOL(bfbc_mouse_dither, false, "bfbc input",
+                    "Emit the game's minimum deflection on every Nth poll so aiming can be slower "
+                    "than its deadzone allows");
+
 REXCVAR_DEFINE_BOOL(bfbc_mouse_debug, false, "bfbc input",
                     "Log raw and shaped right-stick values while polling");
 
@@ -46,6 +59,11 @@ namespace {
 constexpr rex::X_STATUS kStatusSuccess = 0;
 
 }  // namespace
+
+MouseTelemetry& MouseState() {
+  static MouseTelemetry state;
+  return state;
+}
 
 std::unique_ptr<rex::system::IInputSystem> CreateShapedInputSystem(bool tool_mode) {
   auto input = std::make_unique<rex::input::InputSystem>(nullptr);

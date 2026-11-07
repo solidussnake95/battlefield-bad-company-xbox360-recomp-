@@ -13,8 +13,10 @@
 #pragma once
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -63,6 +65,10 @@ inline std::string BindNameForImGuiKey(ImGuiKey key) {
       return "Up";
     case ImGuiKey_DownArrow:
       return "Down";
+    // The runtime's key table uses the bare modifier names. Note that the MnK
+    // driver cannot match a bare modifier on its own (a held Shift makes the
+    // live modifier mask non-zero), so the value is expanded to "Shift+Shift"
+    // later by NormalizeBindToken. There is no Win/Super entry in the table.
     case ImGuiKey_LeftShift:
     case ImGuiKey_RightShift:
       return "Shift";
@@ -128,6 +134,242 @@ inline std::string BindNameForImGuiKey(ImGuiKey key) {
       return {};
   }
 }
+// Canonicalises one component of a binding (a bare key or modifier name):
+// lowercases it, then maps aliases and the lowercase form of every name the
+// runtime ParseVirtualKey accepts back to the exact spelling it expects.
+inline std::string CanonicalKeyToken(const std::string& token) {
+  // One component of a binding: lowercase it, then map aliases and the
+  // lowercase forms of the names ParseVirtualKey knows back to their exact
+  // spelling (that parser is case-sensitive).
+  const size_t first = token.find_first_not_of(" \t");
+  const size_t last = token.find_last_not_of(" \t");
+  std::string part =
+      (first == std::string::npos) ? std::string() : token.substr(first, last - first + 1);
+  if (part.empty()) {
+    return part;
+  }
+
+  std::string lower;
+  lower.reserve(part.size());
+  for (char c : part) {
+    if (c != ' ') {
+      lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+  }
+
+  // Modifier aliases, including the side-specific names older builds wrote.
+  if (lower == "shift" || lower == "lshift" || lower == "rshift" ||
+      lower == "leftshift" || lower == "rightshift") {
+    return "Shift";
+  }
+  if (lower == "ctrl" || lower == "control" || lower == "lctrl" || lower == "rctrl" ||
+      lower == "leftctrl" || lower == "rightctrl") {
+    return "Control";
+  }
+  if (lower == "alt" || lower == "lalt" || lower == "ralt" || lower == "leftalt" ||
+      lower == "rightalt") {
+    return "Alt";
+  }
+  if (lower == "caps" || lower == "capslock" || lower == "capital") return "CapsLock";
+  if (lower == "pgup" || lower == "pageup") return "PageUp";
+  if (lower == "pgdn" || lower == "pagedown") return "PageDown";
+  if (lower == "ins" || lower == "insert") return "Insert";
+  if (lower == "del" || lower == "delete") return "Delete";
+  if (lower == "esc" || lower == "escape") return "Escape";
+  if (lower == "enter" || lower == "return") return "Return";
+  if (lower == "uparrow") return "Up";
+  if (lower == "downarrow") return "Down";
+  if (lower == "leftarrow") return "Left";
+  if (lower == "rightarrow") return "Right";
+  if (lower == "print" || lower == "printscreen") return "PrintScreen";
+
+  // Names that are already canonical once lowercased.
+  static constexpr const char* kCanonicalNames[] = {
+      "Backtick", "Minus",  "Plus",        "Comma",    "Period",    "Semicolon",
+      "Slash",    "Backslash", "LBracket", "RBracket", "Quote",     "Space",
+      "Tab",      "Backspace", "Home",     "End",      "Left",      "Right",
+      "Up",       "Down",      "NumpadEnter", "NumpadPlus", "NumpadMinus",
+      "NumpadStar", "NumpadSlash", "Pause", "NumLock",  "ScrollLock", "LMB",
+      "RMB",      "MMB",
+  };
+  for (const char* name : kCanonicalNames) {
+    std::string candidate;
+    for (const char* p = name; *p; ++p) {
+      candidate.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(*p))));
+    }
+    if (lower == candidate) {
+      return name;
+    }
+  }
+
+  if (lower.size() == 1) {
+    if (lower[0] >= 'a' && lower[0] <= 'z') {
+      return std::string(1, static_cast<char>(std::toupper(static_cast<unsigned char>(lower[0]))));
+    }
+    if (lower[0] >= '0' && lower[0] <= '9') {
+      return lower;
+    }
+  }
+  if (lower.size() >= 2 && lower[0] == 'f') {
+    const int number = std::atoi(lower.c_str() + 1);
+    if (number >= 1 && number <= 24) {
+      return "F" + std::to_string(number);
+    }
+  }
+  if (lower.rfind("numpad", 0) == 0 && lower.size() == 7 && lower[6] >= '0' &&
+      lower[6] <= '9') {
+    return "Numpad" + std::string(1, lower[6]);
+  }
+  return part;
+}
+
+// A token may carry modifier prefixes ("Shift+Up"); normalize each component.
+// A bare modifier is expanded to its prefixed form: the MnK driver only fires
+// a bind when the required modifier mask equals the live one, so a held Shift
+// makes "Shift" (mask 0) impossible to match, while "Shift+Shift" matches.
+inline std::string NormalizeBindToken(const std::string& token) {
+  std::vector<std::string> parts;
+  size_t start = 0;
+  while (true) {
+    const size_t plus = token.find('+', start);
+    const size_t end = (plus == std::string::npos) ? token.size() : plus;
+    parts.push_back(CanonicalKeyToken(token.substr(start, end - start)));
+    if (plus == std::string::npos) {
+      break;
+    }
+    start = plus + 1;
+  }
+  std::string joined;
+  for (const std::string& part : parts) {
+    if (part.empty()) {
+      continue;
+    }
+    if (!joined.empty()) {
+      joined += '+';
+    }
+    joined += part;
+  }
+  if (parts.size() == 1) {
+    if (joined == "Shift") return "Shift+Shift";
+    if (joined == "Control") return "Control+Control";
+    if (joined == "Alt") return "Alt+Alt";
+  }
+  return joined;
+}
+
+// What the binding row shows: hide the driver workaround above.
+inline std::string DisplayBindToken(const std::string& token) {
+  if (token == "Shift+Shift") return "Shift";
+  if (token == "Control+Control") return "Control";
+  if (token == "Alt+Alt") return "Alt";
+  return token;
+}
+
+inline std::string DisplayBindValue(const std::string& raw) {
+  std::vector<std::string> tokens;
+  size_t start = 0;
+  while (true) {
+    const size_t comma = raw.find(',', start);
+    const size_t end = (comma == std::string::npos) ? raw.size() : comma;
+    tokens.push_back(raw.substr(start, end - start));
+    if (comma == std::string::npos) break;
+    start = comma + 1;
+  }
+  std::string result;
+  for (const std::string& token : tokens) {
+    bool hidden = false;
+    for (const char* prefix : {"Shift+", "Control+", "Alt+"}) {
+      const size_t n = std::strlen(prefix);
+      if (token.rfind(prefix, 0) == 0) {
+        const std::string base = token.substr(n);
+        for (const std::string& plain : tokens) {
+          if (plain == base) {
+            hidden = true;
+            break;
+          }
+        }
+      }
+      if (hidden) break;
+    }
+    if (hidden) continue;
+    if (!result.empty()) result += ',';
+    result += DisplayBindToken(token);
+  }
+  return result;
+}
+
+// "C,Ctrl" -> "C,Control+Control"; used for every value that reaches a
+// keybind cvar. Surrounding quotes from a config line are dropped too.
+inline std::string NormalizeBindValue(const std::string& raw) {
+  std::string value = raw;
+  const size_t first = value.find_first_not_of(" \t");
+  const size_t last = value.find_last_not_of(" \t");
+  value = (first == std::string::npos) ? std::string() : value.substr(first, last - first + 1);
+  if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+    value = value.substr(1, value.size() - 2);
+  }
+
+  std::string result;
+  size_t start = 0;
+  while (true) {
+    const size_t comma = value.find(',', start);
+    const size_t end = (comma == std::string::npos) ? value.size() : comma;
+    std::string token = value.substr(start, end - start);
+    token = NormalizeBindToken(token);
+    if (!token.empty()) {
+      if (!result.empty()) {
+        result += ',';
+      }
+      result += token;
+    }
+    if (comma == std::string::npos) {
+      break;
+    }
+    start = comma + 1;
+  }
+  return result;
+}
+
+// The MnK driver wants an exact modifier mask, so plain "W" stops matching
+// while Shift/Ctrl/Alt is held. Add the prefixed alternatives for every plain
+// token. DisplayBindValue hides them again in the menu.
+inline std::string AddModifierVariants(const std::string& value) {
+  std::vector<std::string> tokens;
+  size_t start = 0;
+  while (true) {
+    const size_t comma = value.find(',', start);
+    const size_t end = (comma == std::string::npos) ? value.size() : comma;
+    const std::string token = value.substr(start, end - start);
+    if (!token.empty()) tokens.push_back(token);
+    if (comma == std::string::npos) break;
+    start = comma + 1;
+  }
+  auto has = [](const std::vector<std::string>& list, const std::string& token) {
+    for (const std::string& item : list) {
+      if (item == token) return true;
+    }
+    return false;
+  };
+  std::vector<std::string> out;
+  for (const std::string& token : tokens) {
+    if (!has(out, token)) out.push_back(token);
+  }
+  const size_t plain_count = out.size();
+  for (size_t i = 0; i < plain_count; ++i) {
+    const std::string token = out[i];
+    if (token.find('+') != std::string::npos) continue;
+    for (const char* prefix : {"Shift+", "Control+", "Alt+"}) {
+      const std::string variant = std::string(prefix) + token;
+      if (!has(tokens, variant) && !has(out, variant)) out.push_back(variant);
+    }
+  }
+  std::string result;
+  for (const std::string& token : out) {
+    if (!result.empty()) result += ',';
+    result += token;
+  }
+  return result;
+}
 
 class GraphicsDialog final : public rex::ui::ImGuiDialog {
  public:
@@ -186,6 +428,10 @@ class GraphicsDialog final : public rex::ui::ImGuiDialog {
     // Field of view written to config.zz (engine setting, next launch); 0 keeps
     // the value the game ships with.
     int fov = 0;
+    // Film grain (PostProcess.FilmGrainEnable in config.zz). Off by default:
+    // the effect adds noise on top of the whole frame and darkens the picture.
+    // The engine reads it at boot, so it is a next-launch option like the FOV.
+    bool film_grain = false;
     // Mouse look drives the right stick, so this scales how much stick
     // deflection one mouse count produces.
     double mouse_sensitivity = 1.0;
@@ -296,6 +542,7 @@ class GraphicsDialog final : public rex::ui::ImGuiDialog {
   // game/dist/xenon/config.zz - where the engine reads Render.ForceFov from.
   std::filesystem::path config_zz_path_;
   int stored_fov_ = 0;
+  bool stored_grain_ = false;
   OutputSizeFn output_size_;
   CloseFn on_close_;
 
@@ -350,6 +597,12 @@ inline void GraphicsDialog::LoadFromCVars() {
                       : 0;
   stored_fov_ = settings_.fov;
 
+  // Grain is another plain Game.cfg value; when the file does not mention it,
+  // show it off (the port's default) so "Apply & save" disables it.
+  const configzip::GrainState grain = configzip::ReadGrain(config_zz_path_);
+  settings_.film_grain = grain.present ? grain.enabled : false;
+  stored_grain_ = settings_.film_grain;
+
   settings_.dirty = false;
 }
 
@@ -394,6 +647,15 @@ inline void GraphicsDialog::Apply(bool persist) {
       fov_error = "Field of view could not be written: " + fov_error;
     } else {
       restart_.push_back("Render.ForceFov (config.zz)");
+    }
+  }
+
+  std::string grain_error;
+  if (settings_.film_grain != stored_grain_) {
+    if (!configzip::WriteGrain(config_zz_path_, settings_.film_grain, &grain_error)) {
+      grain_error = "Film grain could not be written: " + grain_error;
+    } else {
+      restart_.push_back("PostProcess.FilmGrainEnable (config.zz)");
     }
   }
 
@@ -442,9 +704,9 @@ inline void GraphicsDialog::Apply(bool persist) {
     status_ = "Nothing to apply.";
   }
 
-  if (!fov_error.empty()) {
+  if (!fov_error.empty() || !grain_error.empty()) {
     status_is_error_ = true;
-    status_ = fov_error;
+    status_ = !fov_error.empty() ? fov_error : grain_error;
   }
 
   settings_.dirty = false;
@@ -619,6 +881,20 @@ inline void GraphicsDialog::DrawRenderingSection() {
     ImGui::TextDisabled("(restart to apply)");
   }
 
+  if (ImGui::Checkbox("Film grain", &settings_.film_grain)) {
+    settings_.dirty = true;
+  }
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip(
+        "PostProcess.FilmGrainEnable inside config.zz. The grain is laid over\n"
+        "the whole frame, so turning it off gives a cleaner, brighter picture.\n"
+        "The engine reads it at boot: takes effect after a restart.");
+  }
+  if (settings_.film_grain != stored_grain_) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("(restart to apply)");
+  }
+
   if (ImGui::Combo("Anisotropic filtering", &settings_.aniso, kAnisoLabels, kAnisoCount)) {
     settings_.dirty = true;
   }
@@ -768,11 +1044,18 @@ inline void GraphicsDialog::ApplyKeyBinds() {
   std::vector<std::pair<std::string, std::string>> changed;
   for (KeyBind& bind : binds_) {
     const std::string current = rex::cvar::GetFlagByName(bind.name);
-    if (current == bind.text) {
+    // The runtime only understands side-specific SDL names ("LeftCtrl"), so
+    // normalize before comparing: an older row may still hold "Ctrl".
+    const std::string desired = AddModifierVariants(NormalizeBindValue(bind.text));
+    if (current == desired) {
+      if (desired != bind.text) {
+        std::snprintf(bind.text, sizeof(bind.text), "%s", desired.c_str());
+      }
       continue;
     }
-    if (rex::cvar::SetFlagByName(bind.name, bind.text)) {
-      changed.emplace_back(bind.name, std::string(bind.text));
+    if (rex::cvar::SetFlagByName(bind.name, desired)) {
+      std::snprintf(bind.text, sizeof(bind.text), "%s", desired.c_str());
+      changed.emplace_back(bind.name, desired);
     } else {
       // Put the rejected text back to what the input system actually has.
       std::snprintf(bind.text, sizeof(bind.text), "%s", current.c_str());
@@ -800,7 +1083,9 @@ inline void GraphicsDialog::DrawKeybindSection() {
   ImGui::TextDisabled(
       "Click a binding, then press the key or mouse button you want: letters, F1-F12,\n"
       "mouse buttons, Shift / Ctrl / Alt and the arrow keys all work. Escape cancels,\n"
-      "Clear removes the binding. Changes stay pending until Apply bindings.");
+      "Clear removes the binding. Changes stay pending until Apply bindings.\n"
+      "Shift / Ctrl / Alt are saved as Shift+Shift / Control+Control internally: the\n"
+      "runtime's driver cannot fire a bare modifier, but the row still shows the short name.");
 
   ImGui::BeginChild("##keybinds", ImVec2(0.0f, 230.0f), ImGuiChildFlags_Borders);
   for (size_t i = 0; i < binds_.size(); ++i) {
@@ -809,7 +1094,7 @@ inline void GraphicsDialog::DrawKeybindSection() {
     const bool capturing = capture_index_ == static_cast<int>(i);
     const std::string shown =
         capturing ? std::string("press a key...")
-                  : (bind.text[0] ? std::string(bind.text) : std::string("(none)"));
+                  : (bind.text[0] ? DisplayBindValue(bind.text) : std::string("(none)"));
     if (ImGui::Button((shown + "##bind").c_str(), ImVec2(170.0f, 0.0f)) && !capturing) {
       capture_index_ = static_cast<int>(i);
       capture_skip_frame_ = true;

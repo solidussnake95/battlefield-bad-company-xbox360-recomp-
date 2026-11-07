@@ -9,6 +9,7 @@ Usage:
     python config_patch.py show   <config.zz>
     python config_patch.py apply  <config.zz> <profile>
     python config_patch.py fov    <config.zz> <degrees|off>
+    python config_patch.py fps    <config.zz> <60|120|0|off>
     python config_patch.py restore <config.zz>
 
 `fov` writes the camera field of view into the same override block, so it
@@ -33,6 +34,14 @@ import zipfile
 
 BEGIN = "-- bfbc port overrides begin"
 END = "-- bfbc port overrides end"
+
+# Game.cfg is a Lua script, so anything outside the applySettings key/value
+# blocks can be a normal statement. Post-process settings live in a Lua table
+# (the grain switch in RAW below is written the same way), so a brightness or
+# exposure tweak has to go in as Lua at the end of the file - after every
+# applySettings block has run.
+LUA_BEGIN = "-- bfbc lua overrides begin"
+LUA_END = "-- bfbc lua overrides end"
 
 PROFILES = {
     # Remove every override (back to the shipped Game.cfg). Used as the
@@ -114,6 +123,34 @@ PROFILES = {
         "WorldRender.ShadowmapViewDistance 300",
         "WorldRender.ShadowmapMinScreenArea 0.005",
     ],
+    # Fixes the dark distance. Outside the single shadow map the engine treats
+    # everything as shadowed, so it is lit by ambient only and the far half of
+    # the world looks like night while the 360 original still has sun there.
+    # The map cannot be made bigger (the resolve surface is allocated 1024 wide,
+    # pitch 1040), so the only free lever is the reach of the one map: 1000 m
+    # puts its edge past the fog, where it cannot be seen. Near shadows get
+    # softer as the range grows (about 1 m per texel at 1000 m).
+    "shadow-bright": [
+        "WorldRender.ShadowmapsEnable true",
+        "WorldRender.ShadowmapViewDistance 1000",
+        "WorldRender.ShadowmapMinScreenArea 0.005",
+    ],
+    # SDR experiment: the shipped config enables WorldRender.HdrEnable, so the
+    # frame goes through the HDR/tonemap path. Turning it off renders the world
+    # in LDR and tells us whether the darkness comes from that path.
+    "sdr": [
+        "WorldRender.HdrEnable false",
+        "WorldRender.ShadowmapsEnable true",
+        "WorldRender.ShadowmapViewDistance 1000",
+        "WorldRender.ShadowmapMinScreenArea 0.005",
+    ],
+    # Diagnostic: turn the sun shadow map off completely. If the scene turns
+    # bright, everything was being classified as shadowed; if it stays dark,
+    # the darkness is not the shadow path at all.
+    "shadows-off": [
+        "Render.ShadowsEnable false",
+        "WorldRender.ShadowmapsEnable false",
+    ],
     # shadow-safe plus film grain off (the grain is what makes the picture look
     # dim and noisy: the shipped FilmGrainColorScale is 0.065 and it is added on
     # top of an already dark dusk scene).
@@ -143,13 +180,13 @@ PROFILES = {
 GRAIN_OFF = ("PostProcess.FilmGrainEnable = true", "PostProcess.FilmGrainEnable = false")
 GRAIN_ON = ("PostProcess.FilmGrainEnable = false", "PostProcess.FilmGrainEnable = true")
 
-# Plain Lua assignments the override block cannot reach. Profiles not listed
-# here put the shipped value back, so switching profiles never leaves a stale
-# edit behind.
+# Plain Lua assignments the override block cannot reach. The port turns the
+# grain off by default (the F5 menu can switch it back on), so switching
+# profiles never re-enables it behind the player's back.
 RAW = {
     "shadow-clear": [GRAIN_OFF],
 }
-RAW_DEFAULT = [GRAIN_ON]
+RAW_DEFAULT = [GRAIN_OFF]
 
 # Camera field of view. The engine reads its settings at boot, so this is a
 # next-launch option rather than something the F5 menu can change live. Vertical
@@ -157,6 +194,13 @@ RAW_DEFAULT = [GRAIN_ON]
 FOV_KEY = "Render.ForceFov"
 FOV_MIN = 45.0
 FOV_MAX = 120.0
+
+# Frame rate ceiling the engine applies to its own main loop (the game ships
+# with 30). 0 lifts the ceiling. This only changes how often the engine steps;
+# whether that produces smoother motion with correct speed depends on the
+# simulation advancing by real elapsed time, so it has to be tried in-game.
+FPS_KEY = "Game.MaxFps"
+FPS_MAX = 240
 
 
 def block_bounds(text: str) -> tuple[int, int] | None:
@@ -183,18 +227,25 @@ def block_lines(text: str) -> list[str]:
     return out
 
 
-def with_fov(lines: list[str], fov_line: str | None) -> list[str]:
-    kept = [line for line in lines if not line.strip().startswith(FOV_KEY)]
-    if fov_line:
-        kept.append(fov_line)
-    return kept
+# Keys the override block owns one line of each, set through their own command
+# rather than through a profile, so switching profiles never loses them.
+HELD_KEYS = (FOV_KEY, FPS_KEY)
 
 
-def current_fov_line(text: str) -> str | None:
-    for line in block_lines(text):
-        if line.strip().startswith(FOV_KEY):
-            return line
-    return None
+def _key_of(line: str) -> str:
+    stripped = line.strip()
+    if not stripped:
+        return ""
+    return stripped.split()[0].split("=")[0]
+
+
+def with_held(lines: list[str], held: list[str]) -> list[str]:
+    kept = [line for line in lines if _key_of(line) not in HELD_KEYS]
+    return kept + held
+
+
+def held_lines(text: str) -> list[str]:
+    return [line for line in block_lines(text) if _key_of(line) in HELD_KEYS]
 
 
 def read_entries(path: str) -> list[tuple[zipfile.ZipInfo, bytes]]:
@@ -225,6 +276,19 @@ def replace_block(text: str, lines: list[str]) -> str:
         # drop the whole override block, leaving the shipped file untouched
         return text[:start] + text[stop + len(END):].lstrip("\r\n")
     return text[:start] + block + text[stop + len(END):]
+
+
+def replace_lua_block(text: str, lines: list[str]) -> str:
+    start = text.find(LUA_BEGIN)
+    if start >= 0:
+        stop = text.find(LUA_END, start)
+        if stop < 0:
+            raise SystemExit(f"marker not found: {LUA_END}")
+        text = text[:start] + text[stop + len(LUA_END):].lstrip("\r\n")
+    if not lines:
+        return text
+    block = LUA_BEGIN + "\n" + "\n".join(lines) + "\n" + LUA_END
+    return text.rstrip("\r\n") + "\n\n" + block + "\n"
 
 
 def apply_raw(text: str, edits: list[tuple[str, str]]) -> str:
@@ -269,8 +333,8 @@ def main(argv: list[str]) -> int:
         for i, (info, data) in enumerate(entries):
             if info.filename == "Game.cfg":
                 text = data.decode("latin-1")
-                # Keep a field of view set through `fov` across profile changes.
-                text = replace_block(text, with_fov(PROFILES[profile], current_fov_line(text)))
+                # Keep values set through their own commands across profile changes.
+                text = replace_block(text, with_held(PROFILES[profile], held_lines(text)))
                 text = apply_raw(text, RAW.get(profile, RAW_DEFAULT))
                 entries[i] = (info, text.encode("latin-1"))
                 changed = True
@@ -300,7 +364,10 @@ def main(argv: list[str]) -> int:
         for i, (info, data) in enumerate(entries):
             if info.filename == "Game.cfg":
                 text = data.decode("latin-1")
-                text = replace_block(text, with_fov(block_lines(text), fov_line))
+                held = [line for line in held_lines(text) if _key_of(line) != FOV_KEY]
+                if fov_line:
+                    held.append(fov_line)
+                text = replace_block(text, with_held(block_lines(text), held))
                 entries[i] = (info, text.encode("latin-1"))
                 changed = True
         if not changed:
@@ -308,6 +375,57 @@ def main(argv: list[str]) -> int:
         write_entries(path, entries)
         print(f"field of view {'cleared' if not fov_line else 'set to ' + value} in {path} "
               f"(applies on the next launch, backup: {backup})")
+        return 0
+
+    if cmd == "fps":
+        value = argv[3] if len(argv) > 3 else ""
+        fps_line = None
+        if value and value.lower() != "off":
+            try:
+                limit = int(value)
+            except ValueError:
+                raise SystemExit("fps takes a whole number, 0 for no ceiling, or 'off'")
+            if limit < 0 or limit > FPS_MAX:
+                raise SystemExit(f"fps must be 0..{FPS_MAX}")
+            fps_line = f"{FPS_KEY} {limit}"
+
+        backup = path + ".bfbc-backup"
+        if not os.path.exists(backup):
+            shutil.copy2(path, backup)
+        changed = False
+        for i, (info, data) in enumerate(entries):
+            if info.filename == "Game.cfg":
+                text = data.decode("latin-1")
+                held = [line for line in held_lines(text) if _key_of(line) != FPS_KEY]
+                if fps_line:
+                    held.append(fps_line)
+                text = replace_block(text, with_held(block_lines(text), held))
+                entries[i] = (info, text.encode("latin-1"))
+                changed = True
+        if not changed:
+            raise SystemExit("Game.cfg not found in the archive")
+        write_entries(path, entries)
+        print(f"{FPS_KEY} {'cleared' if not fps_line else 'set to ' + value} in {path} "
+              f"(applies on the next launch, backup: {backup})")
+        return 0
+
+    if cmd == "lua":
+        # python config_patch.py lua <config.zz> "PostProcess.Brightness = 1.15"
+        # python config_patch.py lua <config.zz> off
+        lines = [a for a in argv[3:] if a and a.lower() != "off"]
+        backup = path + ".bfbc-backup"
+        if not os.path.exists(backup):
+            shutil.copy2(path, backup)
+        changed = False
+        for i, (info, data) in enumerate(entries):
+            if info.filename == "Game.cfg":
+                text = data.decode("latin-1")
+                entries[i] = (info, replace_lua_block(text, lines).encode("latin-1"))
+                changed = True
+        if not changed:
+            raise SystemExit("Game.cfg not found in the archive")
+        write_entries(path, entries)
+        print(f"lua overrides {'cleared' if not lines else 'set'} in {path} (backup: {backup})")
         return 0
 
     if cmd == "restore":

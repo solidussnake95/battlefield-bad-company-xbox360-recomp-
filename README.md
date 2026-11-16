@@ -8,6 +8,10 @@ into a native Windows x64 application, built with **ReXGlue SDK 0.10.0**.
 This repository contains **project code only** — no retail game content and no code
 generated from it (`game/` and `generated/` are ignored; see below).
 
+**Beta 2.0** adds dual pad backends (XInput + SDL), extra mouse-button mapping,
+and F5 controls for the GPU readback mode and render target path. The release
+package contains **no game files**.
+
 ---
 
 ## Contents
@@ -17,11 +21,11 @@ generated from it (`game/` and `generated/` are ignored; see below).
 | `CMakeLists.txt` | Builds `bfbc.exe` (WIN32) and stages the GPU plugin plus a linker map |
 | `bfbc_manifest.toml` | Recompilation manifest: entry point, `setjmp/longjmp`, hand-discovered function entries |
 | `src/main.cpp` | Registers the application (`REX_DEFINE_APP`) |
-| `src/bfbc_app.h` | App hooks: launch defaults, GPU plugin preload, startup graphics values, input factory |
-| `src/bfbc_graphics.h` | F5 overlay: display, resolution, VSync, frame cap, filtering, lighting/compatibility, mouse, key bindings |
+| `src/bfbc_app.h` | App hooks: launch defaults, GPU plugin preload, startup graphics values, dual-pad input factory, overlay cursor watcher |
+| `src/bfbc_graphics.h` | F5 overlay: display, resolution, VSync, filtering, readback resolve, render target path, mouse, key bindings |
 | `src/bfbc_frame.h` / `.cpp` | Measures the guest's per-frame `VdSwap` rate and logs it (`Frame: 30.5 fps`); no limiter |
 | `src/bfbc_configzip.h` | Reads and rewrites `Render.ForceFov` and `PostProcess.FilmGrainEnable` inside `config.zz` for the F5 sliders |
-| `src/bfbc_mouse.h` / `.cpp` | Mouse → right-stick shaping layer, and the input system that installs it |
+| `src/bfbc_mouse.h` / `.cpp` | Mouse → right-stick shaping, extra mouse buttons/wheel, and the dual XInput + SDL pad input system |
 | `src/bfbc_patches.cpp` | Stubs for the SDK's `XeKeys*` licence-signature functions |
 | `build.ps1` | Full build: configure → codegen → branch repair → Ninja |
 | `build/fix_gen_branches.ps1` | Rewrites codegen branches that become `REX_FATAL` although their label exists |
@@ -29,6 +33,7 @@ generated from it (`game/` and `generated/` are ignored; see below).
 | `build/NOTES_missing_functions.md` | How missing functions were found without splitting existing ones |
 | `build/run_bfbc.bat` | Short launcher (no longer required) |
 | `RELEASE.md` | How the Windows package is assembled and published |
+| `NOTES-Beta-2.0.md` | Release notes shipped with the current beta |
 
 ---
 
@@ -37,7 +42,7 @@ generated from it (`game/` and `generated/` are ignored; see below).
 - Windows x64.
 - **ReXGlue SDK 0.10.0** (`win-amd64`) — provides `rexglue.exe`, `rexruntime.dll` and `rexgpu-xenos.dll`.
 - **LLVM/Clang 19.1.5**, **CMake 3.31.6**, **Ninja 1.13.2**.
-- An `xwin` sysroot with MSVC 14.44 and Windows SDK 10.0.26100 (no Visual Studio install needed).
+- **Visual Studio 2022 Build Tools** with MSVC 14.44 and Windows SDK 10.0.26100; `build.ps1` sets `INCLUDE`/`LIB` itself, so no `vcvars` shell is needed.
 
 The toolchain paths are set at the top of `build.ps1`; point them at your machine.
 
@@ -45,7 +50,7 @@ The toolchain paths are set at the top of `build.ps1`; point them at your machin
 
 ## Game files (not included)
 
-Place a copy **you own** in `gamedump/` so that it looks like this:
+Place a copy **you own** in `game/` so that it looks like this:
 
 ```
 game/default.xex          # the title's executable image
@@ -78,6 +83,7 @@ and then creates the graphics system.
 
 A prebuilt Windows package is published under
 [Releases](https://github.com/solidussnake95/battlefield-bad-company-xbox360-recomp-/releases).
+The Beta 2.0 package contains no game files.
 
 ---
 
@@ -115,22 +121,48 @@ A prebuilt Windows package is published under
    instead of taking typed text, so mouse buttons (`LMB`/`RMB`/`MMB`), `Shift`,
    `Control`, `Alt` and the arrow keys can be bound; the names written are the ones the
    runtime's key parser accepts.
+   Pads: `bfbc_pad_backend` defaults to `both`. XInput is opened for Xbox pads and
+   SDL for PlayStation pads at the same time, so either works without a restart and
+   hot-plug is handled by the input system; `xinput` and `sdl` pin one backend. With
+   both open, a `SharedAssignment` merges the devices into guest user 0 instead of
+   leaving a phantom second player. The middle/back/forward mouse buttons and the
+   wheel are mapped by `bfbc_mouse_middle`, `bfbc_mouse_x1`, `bfbc_mouse_x2` and
+   `bfbc_mouse_wheel` (pad action names such as `b`, `x`, `lt`, `dpad_up`).
 4. **F5 overlay** (`bfbc_graphics.h`): display mode, output resolution, internal
-   resolution, VSync, anisotropy, shader compilation, mouse gain/vertical gain/curve
-   and every `keybind_*` — all saved to `bfbc.toml`; the field-of-view slider and the
-   film-grain switch are the exceptions, written into `config.zz` because the engine
-   only reads those values at boot.
+   resolution, VSync, anisotropy, async shader compilation, readback resolve, render
+   target path, mouse gain/curve/deadzone and every `keybind_*` — all saved to
+   `bfbc.toml`; the field-of-view slider and the film-grain switch are the exceptions,
+   written into `config.zz` because the engine only reads those values at boot.
+   `readback_resolve` (`none`/`fast`/`some`/`full`) is the plugin's string enum;
+   `fast` is the default that brightens the world on this driver. The render target
+   path is `rtv` (faster, but approximated HDR formats make smoke look wrong) or
+   `rov` (accurate transparency, but new blend/depth states compile pipelines and
+   can hitch; some AMD drivers also crash). Both need a restart because the render
+   target cache is built once at startup, and the menu writes the choice without
+   applying it to the running session.
 5. **`bfbc_patches.cpp`**: `XeKeysConsolePrivateKeySign` and
    `XeKeysConsoleSignatureVerification` report success instead of 0, otherwise the
    title aborts on its disc check.
 6. **`fix_gen_branches.ps1`**: turns `if (cond) REX_FATAL(...)` back into
    `if (cond) goto loc_XXXX;` where the emitter failed to classify a branch whose
    target label is present in the emitted body.
+7. **Startup graphics defaults** (`bfbc_app.h`): `readback_resolve=fast`,
+   `async_shader_compilation=true`, and 256/1024/2048 MB texture-cache limits are
+   pushed before GPU init, so a regenerated `bfbc.toml` cannot silently fall back to
+   the darker/synchronous defaults. The old `gamma_render_target_as_unorm16=false`
+   override is gone; the plugin default is correct.
 
 ---
 
 ## Known limitations
 
+- **Render target path trade-off**: `rtv` is the default for speed, but the Xbox
+  360's 10-bit HDR formats have to be approximated, so smoke and translucent
+  particles can look hard-edged or too opaque. `rov` blends in the pixel shader and
+  fixes that, but every new blend/depth state compiles a pipeline (first-use
+  hitches), and the ROV path can crash on AMD drivers with SDK 0.10.0
+  (`XEvent::Set` null event). Use `rtv` for a stable session; the F5 option saves
+  `rov` for the next launch if you want to test it.
 - **The game runs at its own ~30 Hz, and there is no frame limiter**: the engine's loop is
   fixed at 30.0 frames per second regardless of what the host can do, so a cap can
   only make it slower. The limiter was therefore removed, and `bfbc.toml` files that

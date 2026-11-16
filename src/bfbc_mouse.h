@@ -17,11 +17,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <rex/cvar.h>
@@ -30,6 +32,7 @@
 #include <rex/logging.h>
 #include <rex/system/interfaces/input.h>
 #include <rex/ui/window.h>
+#include <rex/ui/window_listener.h>
 
 // Defined in src/bfbc_mouse.cpp.
 REXCVAR_DECLARE(double, bfbc_mouse_gain);
@@ -41,6 +44,15 @@ REXCVAR_DECLARE(bool, bfbc_mouse_time_normalize);
 REXCVAR_DECLARE(double, bfbc_mouse_smooth);
 REXCVAR_DECLARE(bool, bfbc_mouse_dither);
 REXCVAR_DECLARE(bool, bfbc_mouse_debug);
+// Pad backends to open: "both" (default) reads Xbox pads through XInput and
+// everything else through SDL at the same time; "xinput" / "sdl" pin one.
+REXCVAR_DECLARE(std::string, bfbc_pad_backend);
+// Extra mouse buttons and the wheel: pad action names, see ApplyAction() in
+// bfbc_mouse.h. "none" disables one; the wheel applies to both directions.
+REXCVAR_DECLARE(std::string, bfbc_mouse_middle);
+REXCVAR_DECLARE(std::string, bfbc_mouse_x1);
+REXCVAR_DECLARE(std::string, bfbc_mouse_x2);
+REXCVAR_DECLARE(std::string, bfbc_mouse_wheel);
 
 namespace bfbc {
 
@@ -61,7 +73,9 @@ struct MouseTelemetry {
 // Defined in src/bfbc_mouse.cpp.
 MouseTelemetry& MouseState();
 
-class MouseShapeDriver final : public rex::input::InputDriver {
+class MouseShapeDriver final : public rex::input::InputDriver,
+                               public rex::ui::WindowInputListener,
+                               public rex::ui::WindowListener {
  public:
   MouseShapeDriver(rex::ui::Window* window, size_t window_z_order)
       : rex::input::InputDriver(window, window_z_order),
@@ -88,6 +102,7 @@ class MouseShapeDriver final : public rex::input::InputDriver {
     const rex::X_RESULT result = inner_.GetDeviceState(id, out_state);
     if (out_state) {
       ShapeRightStick(out_state);
+      ApplyExtraButtons(out_state);
     }
     return result;
   }
@@ -107,7 +122,67 @@ class MouseShapeDriver final : public rex::input::InputDriver {
     return inner_.GetDeviceKeystroke(id, flags, out_keystroke);
   }
 
-  void OnWindowAvailable(rex::ui::Window* window) override { inner_.OnWindowAvailable(window); }
+  void OnWindowAvailable(rex::ui::Window* window) override {
+    inner_.OnWindowAvailable(window);
+    if (window) {
+      // The SDK driver only maps LMB/RMB/MMB (OnMouseDown rejects kX1/kX2), so
+      // the wrapper also listens directly to pick up the side buttons and the
+      // wheel and turns them into the pad actions set in bfbc_mouse_*.
+      window->AddInputListener(this, window_z_order());
+      window->AddListener(this);
+      watch_window_ = window;
+    }
+  }
+
+  void OnMouseDown(rex::ui::MouseEvent& e) override {
+    switch (e.button()) {
+      case rex::ui::MouseEvent::Button::kMiddle:
+        middle_down_.store(true, std::memory_order_relaxed);
+        break;
+      case rex::ui::MouseEvent::Button::kX1:
+        x1_down_.store(true, std::memory_order_relaxed);
+        break;
+      case rex::ui::MouseEvent::Button::kX2:
+        x2_down_.store(true, std::memory_order_relaxed);
+        break;
+      default:
+        break;
+    }
+  }
+
+  void OnMouseUp(rex::ui::MouseEvent& e) override {
+    switch (e.button()) {
+      case rex::ui::MouseEvent::Button::kMiddle:
+        middle_down_.store(false, std::memory_order_relaxed);
+        break;
+      case rex::ui::MouseEvent::Button::kX1:
+        x1_down_.store(false, std::memory_order_relaxed);
+        break;
+      case rex::ui::MouseEvent::Button::kX2:
+        x2_down_.store(false, std::memory_order_relaxed);
+        break;
+      default:
+        break;
+    }
+  }
+
+  void OnMouseWheel(rex::ui::MouseEvent& e) override {
+    if (e.scroll_y() != 0) {
+      // One detent is applied for the next few guest polls so a single notch
+      // is not lost between frames.
+      wheel_polls_.store(6, std::memory_order_relaxed);
+    }
+  }
+
+  void OnLostFocus(rex::ui::UISetupEvent&) override { ClearExtraButtons(); }
+  void OnClosing(rex::ui::UIEvent&) override {
+    if (watch_window_) {
+      watch_window_->RemoveInputListener(this);
+      watch_window_->RemoveListener(this);
+      watch_window_ = nullptr;
+    }
+    ClearExtraButtons();
+  }
 
  private:
   static constexpr float kFullScale = 32767.0f;
@@ -299,6 +374,88 @@ class MouseShapeDriver final : public rex::input::InputDriver {
       }
     }
   }
+
+  void ApplyExtraButtons(rex::input::X_INPUT_STATE* state) {
+    if (middle_down_.load(std::memory_order_relaxed)) {
+      ApplyAction(state, REXCVAR_GET(bfbc_mouse_middle));
+    }
+    if (x1_down_.load(std::memory_order_relaxed)) {
+      ApplyAction(state, REXCVAR_GET(bfbc_mouse_x1));
+    }
+    if (x2_down_.load(std::memory_order_relaxed)) {
+      ApplyAction(state, REXCVAR_GET(bfbc_mouse_x2));
+    }
+    if (wheel_polls_.load(std::memory_order_relaxed) > 0) {
+      wheel_polls_.fetch_sub(1, std::memory_order_relaxed);
+      ApplyAction(state, REXCVAR_GET(bfbc_mouse_wheel));
+    }
+  }
+
+  void ClearExtraButtons() {
+    middle_down_.store(false, std::memory_order_relaxed);
+    x1_down_.store(false, std::memory_order_relaxed);
+    x2_down_.store(false, std::memory_order_relaxed);
+    wheel_polls_.store(0, std::memory_order_relaxed);
+  }
+
+  // Turns one action name into pad state. The names match the pad's own
+  // buttons, so keybind and mouse extra buttons use the same vocabulary.
+  static void ApplyAction(rex::input::X_INPUT_STATE* state, const std::string& raw) {
+    std::string action;
+    action.reserve(raw.size());
+    for (char c : raw) {
+      if (c != ' ' && c != '\t') {
+        action.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+      }
+    }
+    if (action.empty() || action == "none") return;
+    if (action == "a") return Press(state, rex::input::X_INPUT_GAMEPAD_A);
+    if (action == "b") return Press(state, rex::input::X_INPUT_GAMEPAD_B);
+    if (action == "x") return Press(state, rex::input::X_INPUT_GAMEPAD_X);
+    if (action == "y") return Press(state, rex::input::X_INPUT_GAMEPAD_Y);
+    if (action == "start") return Press(state, rex::input::X_INPUT_GAMEPAD_START);
+    if (action == "back") return Press(state, rex::input::X_INPUT_GAMEPAD_BACK);
+    if (action == "guide") return Press(state, rex::input::X_INPUT_GAMEPAD_GUIDE);
+    if (action == "lb" || action == "left_shoulder") {
+      return Press(state, rex::input::X_INPUT_GAMEPAD_LEFT_SHOULDER);
+    }
+    if (action == "rb" || action == "right_shoulder") {
+      return Press(state, rex::input::X_INPUT_GAMEPAD_RIGHT_SHOULDER);
+    }
+    if (action == "lstick_press") return Press(state, rex::input::X_INPUT_GAMEPAD_LEFT_THUMB);
+    if (action == "rstick_press") return Press(state, rex::input::X_INPUT_GAMEPAD_RIGHT_THUMB);
+    if (action == "lt" || action == "left_trigger") {
+      state->gamepad.left_trigger = 255;
+      return;
+    }
+    if (action == "rt" || action == "right_trigger") {
+      state->gamepad.right_trigger = 255;
+      return;
+    }
+    if (action == "dpad_up") return Press(state, rex::input::X_INPUT_GAMEPAD_DPAD_UP);
+    if (action == "dpad_down") return Press(state, rex::input::X_INPUT_GAMEPAD_DPAD_DOWN);
+    if (action == "dpad_left") return Press(state, rex::input::X_INPUT_GAMEPAD_DPAD_LEFT);
+    if (action == "dpad_right") return Press(state, rex::input::X_INPUT_GAMEPAD_DPAD_RIGHT);
+    if (action == "lstick_up") state->gamepad.thumb_ly = 32767;
+    else if (action == "lstick_down") state->gamepad.thumb_ly = -32768;
+    else if (action == "lstick_left") state->gamepad.thumb_lx = -32768;
+    else if (action == "lstick_right") state->gamepad.thumb_lx = 32767;
+    else if (action == "rstick_up") state->gamepad.thumb_ry = 32767;
+    else if (action == "rstick_down") state->gamepad.thumb_ry = -32768;
+    else if (action == "rstick_left") state->gamepad.thumb_rx = -32768;
+    else if (action == "rstick_right") state->gamepad.thumb_rx = 32767;
+  }
+
+  static void Press(rex::input::X_INPUT_STATE* state, uint16_t mask) {
+    state->gamepad.buttons =
+        static_cast<uint16_t>(static_cast<uint16_t>(state->gamepad.buttons) | mask);
+  }
+
+  rex::ui::Window* watch_window_ = nullptr;
+  std::atomic<bool> middle_down_{false};
+  std::atomic<bool> x1_down_{false};
+  std::atomic<bool> x2_down_{false};
+  std::atomic<int32_t> wheel_polls_{0};
 
   rex::input::mnk::MnkInputDriver inner_;
 };

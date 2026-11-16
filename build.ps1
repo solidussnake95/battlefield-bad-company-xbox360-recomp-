@@ -17,19 +17,18 @@ param(
 $ErrorActionPreference = "Stop"
 
 $Root = $PSScriptRoot
-$Toolchain = "D:\SAINTS ROW\build\toolchain"
-$Sysroot = Join-Path $Toolchain "winsysroot-14.44.17.14-10.0.26100"
-$Llvm = Join-Path $Toolchain "llvm-19.1.5"
-$CMake = Join-Path $Toolchain "cmake-3.31.6\bin\cmake.exe"
-$Ninja = Join-Path $Toolchain "ninja-1.13.2\ninja.exe"
+$Toolchain = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools"
+$Llvm = "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/Llvm/x64"
+$CMake = "C:\Program Files\CMake\bin\cmake.exe"
+$Ninja = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Packages\Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe\ninja.exe"
 $Sdk = "D:\recomps\.sdk\rexglue-sdk-0.10.0\win-amd64"
 $Build = Join-Path $Root "build"
 
-$Msvc = Join-Path $Sysroot "VC\Tools\MSVC\14.44.17.14"
-$KitsInc = Join-Path $Sysroot "Windows Kits\10\Include\10.0.26100"
-$KitsLib = Join-Path $Sysroot "Windows Kits\10\Lib\10.0.26100"
+$Msvc = Join-Path $Toolchain "VC\Tools\MSVC\14.44.35207"
+$KitsInc = "C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0"
+$KitsLib = "C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0"
 
-foreach ($p in @($CMake, $Ninja, (Join-Path $Llvm "bin\clang++.exe"), $Sysroot, $Sdk)) {
+foreach ($p in @($CMake, $Ninja, (Join-Path $Llvm "bin\clang++.exe"), $Msvc, $KitsInc, $Sdk)) {
     if (-not (Test-Path $p)) { throw "Missing build dependency: $p" }
 }
 
@@ -43,7 +42,7 @@ $env:LIB = (@(
     "$KitsLib\ucrt\x64", "$KitsLib\um\x64"
 ) -join ";")
 $env:PATH = (@(
-    "$Llvm\bin", (Join-Path $Toolchain "cmake-3.31.6\bin"), (Join-Path $Toolchain "ninja-1.13.2"),
+    "$Llvm\bin", (Split-Path $CMake), (Split-Path $Ninja),
     (Join-Path $Sdk "bin")
 ) -join ";") + ";" + $env:PATH
 $env:REXSDK = $Sdk
@@ -59,9 +58,9 @@ $cfgArgs = @(
     "-S", $Root, "-B", $Build, "-G", "Ninja",
     "-DCMAKE_MAKE_PROGRAM=$Ninja",
     "-DCMAKE_BUILD_TYPE=Release",
-    "-DCMAKE_C_COMPILER=$(Join-Path $Llvm 'bin\clang.exe')",
-    "-DCMAKE_CXX_COMPILER=$(Join-Path $Llvm 'bin\clang++.exe')",
-    "-DCMAKE_RC_COMPILER=$(Join-Path $Llvm 'bin\llvm-rc.exe')",
+    "-DCMAKE_C_COMPILER=$Llvm/bin/clang.exe",
+    "-DCMAKE_CXX_COMPILER=$Llvm/bin/clang++.exe",
+    "-DCMAKE_RC_COMPILER=$Llvm/bin/llvm-rc.exe",
     # The xwin sysroot only ships the release CRT (no msvcrtd.lib), so pin every
     # configuration to the release runtime; this is what the runtime expects.
     "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL",

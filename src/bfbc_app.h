@@ -5,6 +5,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -14,6 +15,8 @@
 #include <vector>
 
 #include <rex/cvar.h>
+#include <rex/runtime.h>
+#include <rex/system/xmemory.h>
 #include <rex/input/input_system.h>
 #include <rex/input/mnk/mnk_input_driver.h>
 #include <rex/logging.h>
@@ -22,12 +25,43 @@
 #include <rex/system/gpu_plugin.h>
 #include <rex/ui/keybinds.h>
 
+// FindWindowByName()/ImGuiWindow::Active: the F4 cvar editor and the F5 menu are
+// plain ImGui windows owned by the SDK, so their visibility is how the cursor
+// watcher below knows when mouse look must let go of the pointer.
+#include <imgui_internal.h>
+
 #if defined(_WIN32)
 #include <windows.h>
 #endif
 
 #include "bfbc_graphics.h"
 #include "bfbc_mouse.h"
+
+// Opt-in 60 fps simulation step (see build/NOTES_timestep.md).
+//
+// The engine advances exactly 1/30 s of simulated time per accepted frame, and
+// every fixed-step user loads that duration from one float in the image
+// (0x8200D7D8): sub_824BD5C8's stepper passes it as the step, sub_82269DB8
+// settles with 50 of them, sub_82708DD0 uses it as the delta fallback, and
+// sub_8260C928 multiplies a frame-count difference by it to obtain seconds.
+// That is why raising the swap rate alone runs the game faster instead of
+// smoother - one swap still carries 1/30 s of engine time.
+//
+// Measured result of the patch below (2026-11-07): halving this constant does
+// shorten the engine's own pacing (fixed holds and the intro sequence end
+// sooner), but it does not turn 60 swaps per second into 60 fps at 1x speed.
+// The per-frame simulation delta therefore comes from somewhere else, and this
+// flag stays as a diagnostic switch for that work; it is off by default.
+REXCVAR_DEFINE_BOOL(bfbc_sim_step_60, false, "bfbc display",
+                    "Halve the engine's 1/30 s frame-step constant in guest memory. "
+                    "Diagnostic only: measured 2026-11-07 it changes engine pacing (fixed "
+                    "holds and the intro get shorter) but does NOT give 60 fps at 1x speed "
+                    "by itself - see build/NOTES_timestep.md")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_INT32(bfbc_sim_wait_ms, 30, "bfbc display",
+                     "Wait timeout for the render thread in milliseconds. "
+                     "Default 30 (30fps). Set to 16676 (~16.676ms) to target 60fps.")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 class BfbcApp : public rex::ReXApp {
  public:
@@ -99,17 +133,23 @@ class BfbcApp : public rex::ReXApp {
     // back to the SDK defaults. Push the file's bindings here first.
     ApplySavedKeyBinds();
 
-    // Keyboard/mouse layout: A=F, B=C and Ctrl, X=R, LB=Q, RB=2, the triggers
-    // on the mouse buttons and the d-pad on the arrow keys. The SDK already
-    // records mouse buttons as virtual keys (LMB/RMB), so binding them to the
-    // pad's triggers is enough. F5/F4 can rebind any of these at any time.
-    ApplyDefaultBind("keybind_a", "F");
-    ApplyDefaultBind("keybind_b", "C,Ctrl");  // two keys: C alone or Ctrl
-    ApplyDefaultBind("keybind_x", "R");
-    ApplyDefaultBind("keybind_left_shoulder", "Q");
+    // Keyboard/mouse layout: A=Space, B=C, X=R, Y=Q, LB=1, RB=2, Start="=",
+    // Back="-", the triggers on the mouse buttons, L3=Shift, R3=Ctrl and the
+    // d-pad on the arrow keys. The SDK already records LMB/RMB as virtual keys;
+    // the middle/side buttons and the wheel are added by the bfbc mouse driver.
+    // F5/F4 can rebind any of these at any time.
+    ApplyDefaultBind("keybind_a", "Space");      // jump
+    ApplyDefaultBind("keybind_b", "C");          // crouch
+    ApplyDefaultBind("keybind_x", "R");          // reload / use
+    ApplyDefaultBind("keybind_y", "Q");          // switch weapon
+    ApplyDefaultBind("keybind_left_shoulder", "1");
     ApplyDefaultBind("keybind_right_shoulder", "2");
     ApplyDefaultBind("keybind_right_trigger", "LMB");  // fire
     ApplyDefaultBind("keybind_left_trigger", "RMB");   // aim
+    ApplyDefaultBind("keybind_lstick_press", "Shift");     // sprint (L3)
+    ApplyDefaultBind("keybind_rstick_press", "Control");   // melee (R3)
+    ApplyDefaultBind("keybind_start", "Plus");   // =
+    ApplyDefaultBind("keybind_back", "Minus");   // -
     ApplyDefaultBind("keybind_dpad_up", "Up");
     ApplyDefaultBind("keybind_dpad_down", "Down");
     ApplyDefaultBind("keybind_dpad_left", "Left");
@@ -152,7 +192,10 @@ class BfbcApp : public rex::ReXApp {
         "draw_resolution_scaled_texture_offsets",
         "resolve_resolution_scale_fill_half_pixel_offset",
         "readback_resolve_half_pixel_offset",
-        "d3d12_readback_resolve",
+        // The plugin has both an old boolean d3d12_readback_resolve (default
+        // false) and the real string enum the settings UI shows. Only this one
+        // accepts none/fast/some/full.
+        "readback_resolve",
         "depth_float24_convert_in_pixel_shader",
         "depth_float24_round",
         "depth_transfer_not_equal_test",
@@ -170,10 +213,6 @@ class BfbcApp : public rex::ReXApp {
         // that on the render thread lands as multi-second hitches the first time
         // a new effect (smoke, fire, decals) shows up, so compile off-thread.
         "async_shader_compilation",
-        // 8_8_8_8_GAMMA render targets: the plugin's UNORM16 path has a
-        // conversion-direction slip in this SDK generation, which lands as a
-        // uniformly dark image. Kept here so it can be pushed before GPU init.
-        "gamma_render_target_as_unorm16",
         "texture_cache_memory_limit_render_to_texture",
         "texture_cache_memory_limit_soft",
         "texture_cache_memory_limit_hard",
@@ -194,6 +233,80 @@ class BfbcApp : public rex::ReXApp {
     }
 
     config.graphics = rex::system::LoadGpuPlugin(config.gpu_plugin);
+  }
+
+  // Data patch applied once the XEX is mapped into guest memory and before the
+  // module launches: this is the SDK's designated hook for that. Only the frame
+  // duration constant is touched, and only when it still holds 1/30 - a build
+  // that moved or already patched it is reported instead of being written over.
+  void OnPostLoadXexImage() override {
+    if (!REXCVAR_GET(bfbc_sim_step_60)) {
+      return;
+    }
+    rex::Runtime* rt = this->runtime();
+    rex::memory::Memory* guest_memory = rt ? rt->memory() : nullptr;
+    if (guest_memory == nullptr) {
+      REXLOG_WARN("Timestep: guest memory is unavailable, the 1/60 patch was skipped");
+      return;
+    }
+    // New: patch the render thread wait timeout if the cvar is set to non-default
+    // Patch the render thread wait timeout if the cvar is set to a non-default value
+    uint32_t wait_timeout_ms = REXCVAR_GET(bfbc_sim_wait_ms);
+    if (wait_timeout_ms != 30) {
+      constexpr uint32_t kWaitAddress = 0x82176428;
+      constexpr uint32_t kWaitSize = sizeof(uint32_t);
+      uint8_t* wait_bytes = guest_memory->TranslateVirtual(kWaitAddress);
+      if (wait_bytes == nullptr) {
+        REXLOG_WARN("Wait: cannot translate {:#x}, skip patch", kWaitAddress);
+      } else {
+        // The value is stored as negative 100ns units: -300000 = -30ms, -166760 = -16.676ms
+        // Convert ms to 100ns units: ms * 10000, then negate
+        int32_t wait_100ns = -((int32_t)(wait_timeout_ms * 10000));
+        uint8_t* wait_step = wait_bytes;
+        std::memcpy(wait_step, &wait_100ns, kWaitSize);
+        REXLOG_INFO("Wait: patched timeout {:#x} -> {}ms ({} * 10000 = {} 100ns, negated {})",
+                    kWaitAddress, wait_timeout_ms, wait_timeout_ms, wait_timeout_ms * 10000, wait_100ns);
+      }
+    }
+
+    // Big-endian float, so the bytes are written in guest order.
+    static constexpr uint8_t kOneThirtieth[4] = {0x3D, 0x08, 0x88, 0x89};
+    static constexpr uint8_t kOneSixtieth[4] = {0x3C, 0x88, 0x88, 0x89};
+    constexpr uint32_t kFrameStepAddress = 0x8200D7D8;
+    constexpr uint32_t kFrameStepSize = sizeof(kOneThirtieth);
+    uint8_t* frame_step = guest_memory->TranslateVirtual(kFrameStepAddress);
+    if (frame_step == nullptr) {
+      REXLOG_WARN("Timestep: cannot translate {:#x}, the 1/60 patch was skipped",
+                  kFrameStepAddress);
+      return;
+    }
+    if (std::memcmp(frame_step, kOneThirtieth, kFrameStepSize) != 0) {
+      REXLOG_WARN("Timestep: {:#x} holds {:02X}{:02X}{:02X}{:02X}, not 1/30 - left untouched",
+                  kFrameStepAddress, frame_step[0], frame_step[1], frame_step[2], frame_step[3]);
+      return;
+    }
+
+    // The image is mapped read-only, so the page has to be made writable through
+    // the guest heap; a bare store faults and is reported as a guest access
+    // violation.
+    rex::memory::BaseHeap* heap = guest_memory->LookupHeap(kFrameStepAddress);
+    if (heap == nullptr) {
+      REXLOG_WARN("Timestep: no heap covers {:#x}, the 1/60 patch was skipped",
+                  kFrameStepAddress);
+      return;
+    }
+    uint32_t old_protect = 0;
+    heap->QueryProtect(kFrameStepAddress, &old_protect);
+    if (!heap->Protect(kFrameStepAddress, kFrameStepSize,
+                       rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite)) {
+      REXLOG_WARN("Timestep: {:#x} could not be made writable, the 1/60 patch was skipped",
+                  kFrameStepAddress);
+      return;
+    }
+    std::memcpy(frame_step, kOneSixtieth, kFrameStepSize);
+    heap->Protect(kFrameStepAddress, kFrameStepSize, old_protect);
+    REXLOG_INFO("Timestep: frame step 1/30 -> 1/60 at {:#x} (bfbc_sim_step_60)",
+                kFrameStepAddress);
   }
 
   // Keyboard and mouse as an Xbox 360 pad. The SDK ships the driver, but only
@@ -244,10 +357,12 @@ class BfbcApp : public rex::ReXApp {
     const auto flag = [](const char* name) -> std::string {
       return rex::cvar::GetFlagInfo(name) ? rex::cvar::GetFlagByName(name) : std::string("n/a");
     };
-    REXLOG_INFO("GPU: rt limit='{}' soft='{}' hard='{}' invalid_fetch='{}' 3d2d='{}'",
+    REXLOG_INFO("GPU: rt limit='{}' soft='{}' hard='{}' invalid_fetch='{}' 3d2d='{}' "
+                "readback='{}' async='{}'",
                 flag("texture_cache_memory_limit_render_to_texture"),
                 flag("texture_cache_memory_limit_soft"), flag("texture_cache_memory_limit_hard"),
-                flag("gpu_allow_invalid_fetch_constants"), flag("gpu_3d_to_2d_texture"));
+                flag("gpu_allow_invalid_fetch_constants"), flag("gpu_3d_to_2d_texture"),
+                flag("readback_resolve"), flag("async_shader_compilation"));
   }
 
   // Every overlay (F3 stats, F4 cvars, F5 graphics, console) uses the SDK's
@@ -345,10 +460,16 @@ class BfbcApp : public rex::ReXApp {
                             // release the capture and show the cursor again.
                             rex::input::mnk::SetMouseLookActive(false);
                           });
+
+    // Watches the SDK-owned overlay windows (F4 included) so the pointer is
+    // released for the menu and captured again for gameplay.
+    cursor_watcher_ = std::make_unique<OverlayCursorWatcher>(imgui_drawer());
+    imgui_drawer()->AddDialog(cursor_watcher_.get());
   }
 
   void OnShutdown() override {
     rex::ui::UnregisterBind("bfbc_bind_graphics");
+    cursor_watcher_.reset();
     graphics_dialog_.reset();
     // Never leave the driver holding a pointer lock for a dialog that is gone.
     rex::input::mnk::SetMouseLookActive(true);
@@ -364,6 +485,38 @@ class BfbcApp : public rex::ReXApp {
   // CreateAchievementNotificationDialog() override;
 
  private:
+  // The SDK's F4 (cvar editor) and F5 (graphics) overlays are plain ImGui
+  // windows. Mouse look (mnk_mouse) captures the pointer and hides the cursor,
+  // and the SDK only releases that lock for dialogs that request it - the F4
+  // editor does not, so the cursor stayed invisible over it. This invisible
+  // dialog runs every frame and drops the mouse-look gate while any overlay
+  // window is open, then restores it when they are all closed.
+  class OverlayCursorWatcher final : public rex::ui::ImGuiDialog {
+   public:
+    explicit OverlayCursorWatcher(rex::ui::ImGuiDrawer* drawer) : ImGuiDialog(drawer) {}
+
+   protected:
+    void OnDraw(ImGuiIO&) override {
+      const bool overlay_open =
+          IsOverlayOpen("Settings##rex") || IsOverlayOpen("Graphics  (F5)") ||
+          IsOverlayOpen("Debug##overlay") || IsOverlayOpen("Console##rex") ||
+          IsOverlayOpen("Achievements##overlay");
+      const bool want_mouse_look = !overlay_open;
+      if (rex::input::mnk::IsMouseLookActive() != want_mouse_look) {
+        rex::input::mnk::SetMouseLookActive(want_mouse_look);
+      }
+    }
+
+   private:
+    static bool IsOverlayOpen(const char* name) {
+      ImGuiWindow* window = ImGui::FindWindowByName(name);
+      // Active is set by this frame's Begin(); WasActive survives when this
+      // dialog happens to draw before the overlay. A one-frame tail is
+      // harmless, a menu that is still open being read as closed is not.
+      return window != nullptr && (window->Active || window->WasActive);
+    }
+  };
+
   // Sets a keyboard/mouse binding unless bfbc.toml already stores one. The
   // config is read after OnConfigurePaths, so anything saved there has to win
   // over these defaults; the file itself is the only reliable way to tell at
@@ -479,12 +632,22 @@ class BfbcApp : public rex::ReXApp {
   // rejects larger values and keeps its default), so that is the most the
   // eviction rate can be reduced without touching the plugin.
   static constexpr StartupDefault kStartupDefaults[] = {
-      // The 360's 8_8_8_8_GAMMA render targets: the plugin's UNORM16 conversion
-      // path is inverted in this SDK generation, so leaving it on crushes every
-      // gamma-space surface and the whole world renders as if unlit, while the
-      // HUD (drawn through a different path) stays bright. This is the single
-      // biggest visual fix in the package.
-      {"gamma_render_target_as_unorm16", "false"},
+      // gamma_render_target_as_unorm16 is deliberately not overridden: the
+      // plugin default is the correct value, and the old "fix" here was what
+      // made the lighting change. Lighting/darkness is handled by the readback
+      // mode below instead.
+      //
+      // fast: read the previous frame's resolve (delayed, copied every frame).
+      // This is the setting that actually brightens the world on this driver;
+      // full stalls on every resolve, none stays dark. "some" copies only on a
+      // cache miss and is selectable from F5; fast remains the default.
+      {"readback_resolve", "fast"},
+      // ROV turns every new blend/depth state combination into a pixel shader.
+      // Compiling those on the render thread is the 40-90 ms hitch seen while
+      // moving into a new area, so build them on the worker threads. Kept as a
+      // default because a regenerated bfbc.toml drops the key when it matches
+      // the plugin default, which silently re-enabled synchronous compiles.
+      {"async_shader_compilation", "true"},
       {"texture_cache_memory_limit_render_to_texture", "256"},
       {"texture_cache_memory_limit_soft", "1024"},
       {"texture_cache_memory_limit_hard", "2048"},
@@ -544,4 +707,5 @@ class BfbcApp : public rex::ReXApp {
 
   std::filesystem::path config_path_;
   std::unique_ptr<bfbc::GraphicsDialog> graphics_dialog_;
+  std::unique_ptr<OverlayCursorWatcher> cursor_watcher_;
 };

@@ -414,6 +414,24 @@ class GraphicsDialog final : public rex::ui::ImGuiDialog {
   static constexpr const char* kScaleLabels[] = {"1x  (720p source)", "2x",
                                                  "3x  (supersampling)"};
 
+  // readback_resolve is a string enum in the GPU plugin. "fast" is the port's
+  // default (it is what brightens the world on this driver); "some" copies
+  // only on a cache miss, and "none"/"full" are the cheaper/accurate ends.
+  static constexpr const char* kReadbackValues[] = {"none", "fast", "some", "full"};
+  static constexpr const char* kReadbackLabels[] = {"none", "fast (default)", "some", "full"};
+  static constexpr int kReadbackCount =
+      static_cast<int>(sizeof(kReadbackValues) / sizeof(kReadbackValues[0]));
+
+  // render_target_path_d3d12 picks the D3D12 render target emulation. RTV is
+  // faster but approximates the 360's HDR formats (smoke can look wrong); ROV
+  // blends in the pixel shader (correct transparency, but new blend/depth
+  // states compile pipelines and can hitch).
+  static constexpr const char* kRenderTargetValues[] = {"rtv", "rov"};
+  static constexpr const char* kRenderTargetLabels[] = {"RTV  (faster)",
+                                                        "ROV  (accurate)"};
+  static constexpr int kRenderTargetCount =
+      static_cast<int>(sizeof(kRenderTargetValues) / sizeof(kRenderTargetValues[0]));
+
   struct Settings {
     bool fullscreen = true;
     bool exclusive = false;
@@ -422,6 +440,10 @@ class GraphicsDialog final : public rex::ui::ImGuiDialog {
     int aniso = 0;
     bool vsync = true;
     bool async_shader = true;
+    // Index into kReadbackValues; 1 = fast, the port's default.
+    int readback = 1;
+    // Index into kRenderTargetValues; 0 = rtv.
+    int render_target = 0;
     // Guest frame cap in frames per second; 0 leaves the guest uncapped
     // (bfbc_frame.h, applied by the VdSwap wrapper).
     int fps_limit = 0;
@@ -529,7 +551,8 @@ class GraphicsDialog final : public rex::ui::ImGuiDialog {
            name == "resolution_scale" || name == "resolution" ||
            name == "draw_resolution_scaled_texture_offsets" ||
            name == "resolve_resolution_scale_fill_half_pixel_offset" ||
-           name == "readback_resolve_half_pixel_offset" || name == "d3d12_readback_resolve";
+           name == "readback_resolve_half_pixel_offset" || name == "readback_resolve" ||
+           name == "render_target_path_d3d12";
   }
 
   struct KeyBind {
@@ -562,6 +585,23 @@ inline void GraphicsDialog::LoadFromCVars() {
   settings_.exclusive = rex::cvar::Query<bool>("fullscreen_exclusive");
   settings_.vsync = rex::cvar::Query<bool>("vsync");
   settings_.async_shader = rex::cvar::Query<bool>("async_shader_compilation");
+  const std::string readback = ReadFlagValue("readback_resolve");
+  settings_.readback = 1;
+  for (int i = 0; i < kReadbackCount; ++i) {
+    if (readback == kReadbackValues[i]) {
+      settings_.readback = i;
+      break;
+    }
+  }
+
+  const std::string render_target = ReadFlagValue("render_target_path_d3d12");
+  settings_.render_target = 0;
+  for (int i = 0; i < kRenderTargetCount; ++i) {
+    if (render_target == kRenderTargetValues[i]) {
+      settings_.render_target = i;
+      break;
+    }
+  }
   settings_.fps_limit = std::clamp(rex::cvar::Query<int32_t>("bfbc_fps_limit"), 0, 480);
   settings_.scale = ClampScale(rex::cvar::Query<int32_t>("draw_resolution_scale_x"));
   settings_.aniso = std::clamp(rex::cvar::Query<int32_t>("anisotropic_override"), 0,
@@ -618,6 +658,11 @@ inline std::vector<std::pair<std::string, std::string>> GraphicsDialog::PendingE
       {"vsync", settings_.vsync ? "true" : "false"},
       {"anisotropic_override", std::to_string(settings_.aniso)},
       {"async_shader_compilation", settings_.async_shader ? "true" : "false"},
+      {"readback_resolve",
+       quote(kReadbackValues[std::clamp(settings_.readback, 0, kReadbackCount - 1)])},
+      {"render_target_path_d3d12",
+       quote(kRenderTargetValues[std::clamp(settings_.render_target, 0,
+                                            kRenderTargetCount - 1)])},
       {"bfbc_fps_limit", std::to_string(settings_.fps_limit)},
       {"mnk_sensitivity", FormatSensitivity(settings_.mouse_sensitivity)},
       {"mnk_mouse", settings_.mouse_look ? "true" : "false"},
@@ -659,9 +704,19 @@ inline void GraphicsDialog::Apply(bool persist) {
     }
   }
 
+  bool render_target_changed = false;
   for (const auto& [name, config_value] : entries) {
     const std::string value = Unquote(config_value);
     if (ReadFlagValue(name.c_str()) == value) {
+      continue;
+    }
+    // render_target_path_d3d12 rebuilds the whole render target cache. Setting
+    // it on a live session leaves the cache on the old path and can crash on
+    // the next draw, so it is only written for the next launch.
+    if (name == "render_target_path_d3d12") {
+      render_target_changed = true;
+      restart_only_entries.emplace_back(name, config_value);
+      restart_.push_back(name);
       continue;
     }
     if (IsInitOnly(name)) {
@@ -713,7 +768,11 @@ inline void GraphicsDialog::Apply(bool persist) {
   if (applied > 0) {
     REXLOG_INFO("Graphics: applied {} cvar(s){}", applied, persist ? ", saved to config" : "");
   }
-  LoadFromCVars();  // Pick up normalized values / new defaults.
+  // Keep the selected path visible while it waits for the restart; reloading
+  // from the cvar would snap it back to the path the running session still uses.
+  if (!render_target_changed) {
+    LoadFromCVars();  // Pick up normalized values / new defaults.
+  }
 }
 
 // Flat "key = value" merge; the SDK writes configs in exactly this shape, so
@@ -907,6 +966,36 @@ inline void GraphicsDialog::DrawRenderingSection() {
   }
   if (ImGui::IsItemHovered()) {
     ImGui::SetTooltip("Compiles shaders in parallel; disables itself on drivers that need sync.");
+  }
+
+  if (ImGui::Combo("Render target path", &settings_.render_target, kRenderTargetLabels,
+                   kRenderTargetCount)) {
+    settings_.dirty = true;
+  }
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip(
+        "How the GPU plugin emulates the Xbox 360's EDRAM render targets.\n"
+        "RTV: host render targets with fixed-function blending. Faster, but the\n"
+        "360's 10-bit HDR formats are approximated, so smoke and other\n"
+        "transparent effects can look hard-edged or too opaque.\n"
+        "ROV: blending and depth/stencil in the pixel shader. Correct smoke and\n"
+        "transparency, but each new blend/depth state compiles a pipeline, which\n"
+        "can hitch the first time an effect appears. Some AMD drivers also crash\n"
+        "in this path; if that happens, choose RTV and restart.\n"
+        "The render target cache is built once at startup: takes effect after a restart.");
+  }
+
+  if (ImGui::Combo("Readback resolve", &settings_.readback, kReadbackLabels, kReadbackCount)) {
+    settings_.dirty = true;
+  }
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip(
+        "How the GPU resolve is read back (auto-exposure and similar effects).\n"
+        "none: off, the world stays dark. fast: previous frame, copied every\n"
+        "frame (the port's default). some: previous frame, copied only on a\n"
+        "cache miss. full: immediate sync readback, accurate but stalls.\n"
+        "The render target cache is built once at startup: takes effect after\n"
+        "a restart.");
   }
 }
 

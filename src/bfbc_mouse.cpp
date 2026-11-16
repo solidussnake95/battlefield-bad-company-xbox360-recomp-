@@ -40,6 +40,22 @@ REXCVAR_DEFINE_BOOL(bfbc_mouse_time_normalize, true, "bfbc input",
                     "Scale mouse movement by the poll interval so the turn rate does not depend on "
                     "frame rate");
 
+REXCVAR_DEFINE_STRING(bfbc_mouse_x1, "x", "bfbc input",
+                      "Pad action on mouse button 4 (side/back); same values as bfbc_mouse_middle")
+    .allowed({"none", "a", "b", "x", "y", "lb", "rb", "lt", "rt", "start", "back",
+              "dpad_up", "dpad_down", "dpad_left", "dpad_right"});
+
+REXCVAR_DEFINE_STRING(bfbc_mouse_x2, "y", "bfbc input",
+                      "Pad action on mouse button 5 (side/forward); same values as bfbc_mouse_middle")
+    .allowed({"none", "a", "b", "x", "y", "lb", "rb", "lt", "rt", "start", "back",
+              "dpad_up", "dpad_down", "dpad_left", "dpad_right"});
+
+REXCVAR_DEFINE_STRING(bfbc_mouse_wheel, "none", "bfbc input",
+                      "Pad action on the mouse wheel (none disables it); same values as "
+                      "bfbc_mouse_middle")
+    .allowed({"none", "a", "b", "x", "y", "lb", "rb", "lt", "rt", "start", "back",
+              "dpad_up", "dpad_down", "dpad_left", "dpad_right"});
+
 REXCVAR_DEFINE_DOUBLE(bfbc_mouse_smooth, 0.2, "bfbc input",
                       "How much of the previous poll's turn rate is kept, so the camera does not "
                       "step once per 30 Hz frame; 0 sends every poll's rate unchanged")
@@ -51,6 +67,21 @@ REXCVAR_DEFINE_BOOL(bfbc_mouse_dither, false, "bfbc input",
 
 REXCVAR_DEFINE_BOOL(bfbc_mouse_debug, false, "bfbc input",
                     "Log raw and shaped right-stick values while polling");
+
+// Which pad backends to open. "both" (default) runs XInput for Xbox pads and
+// SDL for PlayStation pads at once; the SDK's own input_backend cannot express
+// that because it only accepts "xinput"/"sdl" and substitutes its default for
+// any other value.
+REXCVAR_DEFINE_STRING(bfbc_pad_backend, "both", "bfbc input",
+                      "Pad backends to open: both (default, XInput + SDL), xinput, or sdl")
+    .allowed({"xinput", "sdl", "both"});
+
+// Pad actions for the mouse buttons the SDK driver does not map, and the wheel.
+REXCVAR_DEFINE_STRING(bfbc_mouse_middle, "b", "bfbc input",
+                      "Pad action on the middle mouse button (none, a, b, x, y, lb, rb, "
+                      "lt, rt, start, back, dpad_*, lstick_*, rstick_*)")
+    .allowed({"none", "a", "b", "x", "y", "lb", "rb", "lt", "rt", "start", "back",
+              "dpad_up", "dpad_down", "dpad_left", "dpad_right"});
 
 namespace bfbc {
 namespace {
@@ -68,10 +99,21 @@ MouseTelemetry& MouseState() {
 std::unique_ptr<rex::system::IInputSystem> CreateShapedInputSystem(bool tool_mode) {
   auto input = std::make_unique<rex::input::InputSystem>(nullptr);
   std::string pads = "none";
+  bool merge_devices = false;
 
   if (!tool_mode) {
+    // "xinput" and "sdl" pin one backend. "both" opens both, so a PlayStation
+    // pad and an Xbox pad work without restarting, and hot-plug still works:
+    // InputSystem re-enumerates every driver when devices arrive or leave.
+    // (input_backend is not consulted: the runtime validates it against its two
+    // values and silently substitutes "sdl" for anything else, so "auto" can
+    // never reach this code.)
+    const std::string backend = REXCVAR_GET(bfbc_pad_backend);
+    const bool want_xinput = backend != "sdl";
+    const bool want_sdl = backend != "xinput";
+    merge_devices = want_xinput && want_sdl;
 #if defined(_WIN32)
-    if (REXCVAR_GET(input_backend) == "xinput") {
+    if (want_xinput) {
       auto pad_driver = std::make_unique<rex::input::xinput::XinputInputDriver>(nullptr, 0);
       if (pad_driver->Setup() == kStatusSuccess) {
         input->AddDriver(std::move(pad_driver));
@@ -81,11 +123,11 @@ std::unique_ptr<rex::system::IInputSystem> CreateShapedInputSystem(bool tool_mod
       }
     }
 #endif
-    if (REXCVAR_GET(input_backend) == "sdl") {
+    if (want_sdl) {
       auto pad_driver = std::make_unique<rex::input::sdl::SDLInputDriver>(nullptr, 0);
       if (pad_driver->Setup() == kStatusSuccess) {
         input->AddDriver(std::move(pad_driver));
-        pads = "sdl";
+        pads = pads == "none" ? "sdl" : pads + "+sdl";
       } else {
         REXLOG_WARN("Input: SDL driver failed to initialise");
       }
@@ -105,10 +147,19 @@ std::unique_ptr<rex::system::IInputSystem> CreateShapedInputSystem(bool tool_mod
   // drivers so a title always sees a controller.
   const uint8_t nop_index = tool_mode ? 0 : 1;
   input->AddDriver(std::make_unique<rex::input::nop::NopInputDriver>(nullptr, nop_index));
-  input->SetDeviceAssignment(std::make_unique<rex::input::SlotAssignment>());
+  // With both backends open the same physical pad can be reported twice (SDL
+  // sees an Xbox pad through RAWINPUT while XInput sees it too). Feeding every
+  // device to one guest user merges those copies instead of leaving a phantom
+  // second player, and this title only ever polls user 0. A pinned backend
+  // keeps the ordinal-per-user slots.
+  if (merge_devices) {
+    input->SetDeviceAssignment(std::make_unique<rex::input::SharedAssignment>());
+  } else {
+    input->SetDeviceAssignment(std::make_unique<rex::input::SlotAssignment>());
+  }
 
-  REXLOG_INFO("Input: custom input system built (pads={}, keyboard/mouse=shaped{})", pads,
-              tool_mode ? ", tool mode" : "");
+  REXLOG_INFO("Input: custom input system built (pads={}{}, keyboard/mouse=shaped{})", pads,
+              merge_devices ? ", merged into user 0" : "", tool_mode ? ", tool mode" : "");
   return input;
 }
 

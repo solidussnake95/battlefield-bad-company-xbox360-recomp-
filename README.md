@@ -33,6 +33,7 @@ package contains **no game files**.
 | `build/add_funcs.ps1`, `build/analyze_image.ps1` | Tooling for adding missing function entries to the manifest |
 | `build/NOTES_missing_functions.md` | How missing functions were found without splitting existing ones |
 | `build/run_bfbc.bat` | Short launcher (no longer required) |
+| `tools/shader_warmup.ps1` | Shader/pipeline cache warm-up: status, timed warm-up run, snapshot/restore |
 | `RELEASE.md` | How the Windows package is assembled and published |
 | `NOTES-Beta-2.0.md` | Release notes shipped with the current beta |
 
@@ -168,6 +169,15 @@ The Beta 2.0 package contains no game files.
 
 ## Known limitations
 
+- **Shader / pipeline cache**: the runtime keeps everything it translated and every
+  D3D12 pipeline description it built under
+  `Documents\bfbc\cache\shaders\shareable\` (`*.xsh`, `*.rtv/rov.d3d12.xpso`) and
+  rebuilds them in ~0.4 s at startup, so a state that was already seen costs
+  nothing later. States that were never seen still compile on first use and are
+  appended when the process exits, which is what the first-visit hitching is.
+  `tools\shader_warmup.ps1` reports how warm the cache is, runs the game for N
+  minutes and prints how much the cache grew (no growth = warm), and
+  snapshots/restores a warm cache. RTV and ROV keep separate caches.
 - **Render target path trade-off**: `rtv` is the default for speed, but the Xbox
   360's 10-bit HDR formats have to be approximated, so smoke and translucent
   particles can look hard-edged or too opaque. `rov` blends in the pixel shader and

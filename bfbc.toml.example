@@ -1,0 +1,134 @@
+# bfbc.toml - annotated reference for BFBC Recomp
+#
+# The game writes its own bfbc.toml next to bfbc.exe; this file is documentation,
+# not something the game loads. Copy the lines you want into your bfbc.toml, or
+# change them in F5 (graphics/mouse/bindings) or F4 (every cvar).
+#
+# The file is a flat "key = value" table. Unknown keys and out-of-range values are
+# ignored by the runtime, and the game now logs them at startup:
+#   [warning] [core] Config: bfbc.toml: 1 key(s) ... unknown ...
+#   [warning] [core] Config: bfbc_mouse_smooth = 1.0 is outside 0..0.9 ...
+#
+# F5 saves no longer reorder the file, drop your comments, or re-add the keys this
+# build removed (bfbc_fps_limit, resolution_scale, d3d12_readback_resolve): saving
+# edits values where they stand, keeps comments, and deletes those three.
+
+# ---------------------------------------------------------------------------
+# Startup
+# ---------------------------------------------------------------------------
+log_level = "info"                  # trace, debug, info, warning, error
+allow_game_relative_writes = true   # let the title write into GAME:\
+gpu_plugin = "xenos"                # GPU plugin DLL next to the exe (rexgpu-xenos)
+
+# ---------------------------------------------------------------------------
+# Display (restart required for resolution, readback and render target path)
+# ---------------------------------------------------------------------------
+fullscreen = true                   # false = windowed. 0.10.0 has no exclusive mode.
+# One of: "" (desktop), "720p", "900p", "1080p", "1440p", "2160p"
+resolution = ""
+# Internal render scale, 1..3. 2 means the 720p guest renders at 1440p and is
+# downsampled/upsampled to the output resolution.
+draw_resolution_scale_x = 2
+draw_resolution_scale_y = 2
+vsync = true                        # 30 fps source on a 60 Hz panel = even cadence
+# 0 = game default, 1 = 1x, 2 = 2x, 3 = 4x, 4 = 8x, 5 = 16x
+anisotropic_override = 3
+swap_post_effect = "fxaa"
+
+# ---------------------------------------------------------------------------
+# Rendering path (restart required)
+# ---------------------------------------------------------------------------
+# none | fast | some | full. "fast" is the port default; "none" leaves the world
+# dark on this driver, "full" stalls on every resolve.
+readback_resolve = "fast"
+async_shader_compilation = true
+# rtv = faster, approximates the 360's 10-bit HDR (smoke can look hard-edged).
+# rov = accurate transparency, first-use pipeline compiles, can crash on AMD.
+render_target_path_d3d12 = "rtv"
+
+# Texture cache budgets in MB. The plugin caps the render-target budget at 256.
+texture_cache_memory_limit_render_to_texture = 256
+texture_cache_memory_limit_soft = 1024
+texture_cache_memory_limit_hard = 2048
+
+# ---------------------------------------------------------------------------
+# Frame pacing
+# ---------------------------------------------------------------------------
+# 0 = leave the engine's own 30 Hz pacing in charge. Anything else paces the
+# swap at that rate -- the simulation does not scale, so 60 plays at double
+# game speed until the per-frame step itself is patched (bfbc_sim_step_60).
+bfbc_pace_fps = 0.000000
+
+# ---------------------------------------------------------------------------
+# Input devices
+# ---------------------------------------------------------------------------
+# both (XInput + SDL at once, hot-plug), xinput, or sdl
+bfbc_pad_backend = "both"
+mnk_mode = true
+mnk_mouse = true                    # mouse look drives the right stick
+mnk_sensitivity = 1.000000
+
+# ---------------------------------------------------------------------------
+# Keyboard / mouse -> pad bindings
+# ---------------------------------------------------------------------------
+# Comma separated key names, any number per action; "" clears the binding.
+# Every bare key also gets Shift+/Control+/Alt+ variants automatically, because
+# the driver matches the modifier mask exactly. A bare modifier is stored as
+# Shift+Shift / Control+Control / Alt+Alt so it can actually fire.
+# Names: A-Z, 0-9, F1-F12, Up/Down/Left/Right, Space, Return, Tab, Backspace,
+# Delete, Insert, Home, End, PageUp, PageDown, Backtick, Minus, Plus, LBracket,
+# RBracket, Backslash, Semicolon, Quote, Comma, Period, LMB, RMB, MMB.
+keybind_a = "Space,Shift+Space,Control+Space,Alt+Space"            # jump
+keybind_b = "C,Shift+C,Control+C,Alt+C"                            # crouch
+keybind_x = "R,Shift+R,Control+R,Alt+R"                            # reload / use
+keybind_y = "Q,Shift+Q,Control+Q,Alt+Q"                            # switch weapon
+keybind_right_trigger = "LMB,Shift+LMB,Control+LMB,Alt+LMB"        # fire
+keybind_left_trigger = "RMB,Shift+RMB,Control+RMB,Alt+RMB"         # aim
+keybind_right_shoulder = "2,Shift+2,Control+2,Alt+2"
+keybind_left_shoulder = "1,Shift+1,Control+1,Alt+1"
+keybind_lstick_up = "W,Shift+W,Control+W,Alt+W"
+keybind_lstick_down = "S,Shift+S,Control+S,Alt+S"
+keybind_lstick_left = "A,Shift+A,Control+A,Alt+A"
+keybind_lstick_right = "D,Shift+D,Control+D,Alt+D"
+keybind_lstick_press = "Shift+Shift"                               # sprint
+keybind_rstick_press = "Control+Control"                           # melee
+# The right stick is driven by the mouse, so these stay empty; the arrow keys
+# belong to the d-pad only.
+keybind_rstick_up = ""
+keybind_rstick_down = ""
+keybind_rstick_left = ""
+keybind_rstick_right = ""
+keybind_dpad_up = "Up,Shift+Up,Control+Up,Alt+Up"
+keybind_dpad_down = "Down,Shift+Down,Control+Down,Alt+Down"
+keybind_dpad_left = "Left,Shift+Left,Control+Left,Alt+Left"
+keybind_dpad_right = "Right,Shift+Right,Control+Right,Alt+Right"
+keybind_start = "Plus,Shift+Plus,Control+Plus,Alt+Plus"            # =
+keybind_back = "Minus,Shift+Minus,Control+Minus,Alt+Minus"         # -
+keybind_guide = "Tab,Shift+Tab,Control+Tab"
+
+# Extra mouse buttons. Values: none, a, b, x, y, lb, rb, lt, rt, start, back,
+# dpad_up, dpad_down, dpad_left, dpad_right.
+bfbc_mouse_middle = "b"
+bfbc_mouse_x1 = "x"
+bfbc_mouse_x2 = "y"
+bfbc_mouse_wheel = "none"
+
+# ---------------------------------------------------------------------------
+# Mouse aim (right-stick shaping)
+# ---------------------------------------------------------------------------
+# gain: how far one mouse count deflects the stick.
+bfbc_mouse_gain = 2.000000
+# vertical: extra multiplier on the Y axis.
+bfbc_mouse_vertical = 1.800000
+# curve: response exponent; 1.0 is linear, values below 1 favour small moves.
+bfbc_mouse_curve = 1.000000
+# deadzone: extra deadzone on top of the game's own (0 keeps everything).
+bfbc_mouse_deadzone = 0.000000
+# floor: minimum emitted deflection (7849 is the game's own deadzone).
+bfbc_mouse_floor = 7849.000000
+# smooth: how much of the previous poll's rate is kept, 0.0..0.9. Anything
+# above 0.9 is rejected by the runtime (that is why 1.0 never applied).
+bfbc_mouse_smooth = 0.200000
+bfbc_mouse_dither = false
+bfbc_mouse_time_normalize = true
+bfbc_mouse_debug = false

@@ -26,6 +26,8 @@ This package contains **no game files**. You must supply your own copy of the ga
   wheel are handled by the mouse driver.
 - The shipped aim defaults are gain 2.0, vertical 1.8, curve 1.0, deadzone 0.0,
   floor 7849, smoothing 0.2, dither off, frame-rate-independent aim on.
+  `bfbc_mouse_smooth` is a 0..0.9 range, so an older `1.000000` in the file was
+  rejected by the runtime: it kept the 0.2 default and logged nothing.
 
 ### Graphics
 - F5 → Rendering has **Readback resolve** (`none`, `fast`, `some`, `full`).
@@ -48,8 +50,13 @@ This package contains **no game files**. You must supply your own copy of the ga
   (`OverlayCursorWatcher`), so the cursor is visible over both overlays.
 
 ### Input layout
-- Default bindings updated: A=Space, B=C, X=R, Y=Q, LB=1, RB=2, L3=Shift,
-  R3=Control, Start=`=`, Back=`-`, triggers on LMB/RMB, d-pad on the arrow keys.
+- Default bindings: A=Space, B=C, X=R, Y=Q, LB=1, RB=2, L3=Shift,
+  R3=Control, Start=`Plus` (`+`/`=`), Back=`Minus` (`-`), Guide=Tab, triggers on
+  LMB/RMB, d-pad on the arrow keys.
+- `keybind_rstick_*` are empty: the shaped mouse drives the right stick. Earlier
+  builds put it on the arrow keys, so every arrow press moved the camera and the
+  d-pad at once.
+- Alt combinations are kept off the Guide button, so Alt+Tab cannot press it.
 - Shift/Ctrl/Alt remain usable as action keys (`Shift+Shift` internally).
 
 ### Build
@@ -66,6 +73,18 @@ This package contains **no game files**. You must supply your own copy of the ga
   game run at 60 fps at normal speed.
 
 ## Fixes
+- **The config writer no longer rewrites the whole file.** Saving from F5 edits the
+  value where it stands, keeps comment lines, and only appends keys the file did not
+  have yet, so the file no longer gets reordered on every save. It is written to a
+  temp file and renamed over the old one, so an interrupted save cannot truncate it.
+- **Saving drops the keys this build removed** (`bfbc_fps_limit`, `resolution_scale`,
+  `d3d12_readback_resolve`) instead of carrying them forward forever. They still
+  parse, for older files.
+- **The dead "Frame rate limit" slider is gone from F5.** `bfbc_fps_limit` has not
+  driven anything since the limiter was removed; the menu kept writing it.
+- **`bfbc.toml` is validated at startup.** Unknown keys, and values outside a flag's
+  range or allowed set, are reported as warnings; before, the runtime skipped them
+  silently and the setting stayed on its default.
 - `readback_resolve` is now the string cvar the plugin actually exposes
   (`none`/`fast`/`some`/`full`). The old boolean `d3d12_readback_resolve` was the
   wrong name and never changed the mode.
@@ -84,6 +103,8 @@ This package contains **no game files**. You must supply your own copy of the ga
 - `bin\bfbc.toml` — initial settings: fullscreen, 2× internal scale, VSync on,
   RTV render target path, readback `fast`, dual pad backend, the mouse defaults
   above.
+- `bfbc.toml.example` — every key, documented. Reference only; the game does not
+  read it.
 - `game\` — empty. Put your own copy of the game here.
 - `licenses\SDL3-LICENSE.txt`, `README.md`, `README.txt`, this file.
 

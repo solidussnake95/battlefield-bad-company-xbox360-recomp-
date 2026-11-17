@@ -5,6 +5,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -231,6 +232,11 @@ class BfbcApp : public rex::ReXApp {
         REXLOG_WARN("Graphics: {} = {} rejected by the runtime", flag, value);
       }
     }
+
+    // Every flag the build owns is registered by now (runtime, this module and
+    // the pre-loaded GPU plugin), so anything left in the file is a real typo or
+    // a key from another build.
+    ReportConfigProblems();
 
     config.graphics = rex::system::LoadGpuPlugin(config.gpu_plugin);
   }
@@ -569,6 +575,114 @@ class BfbcApp : public rex::ReXApp {
       } else {
         REXLOG_WARN("Input: saved binding {} = '{}' rejected by the runtime", name, value);
       }
+    }
+  }
+
+  // Checks bfbc.toml against the flag registry and reports what the runtime
+  // silently drops. The runtime treats the file as a flat table: a key it cannot
+  // match is skipped, and a value outside the flag's range/allowed set is
+  // rejected, both with nothing in the log -- the setting just stays on its
+  // default. (bfbc_mouse_smooth = 1.0, range 0..0.9, is the case that prompted
+  // this.) Called once the GPU plugin is pre-loaded, because its flags are
+  // registered from its own DLL and would otherwise look unknown.
+  void ReportConfigProblems() {
+    if (config_path_.empty()) {
+      return;
+    }
+    std::ifstream in(config_path_);
+    if (!in) {
+      return;
+    }
+    std::vector<std::string> unknown;
+    std::vector<std::string> obsolete;
+    std::vector<std::string> invalid;
+    std::string line;
+    while (std::getline(in, line)) {
+      const size_t eq = line.find('=');
+      if (eq == std::string::npos) {
+        continue;  // comment, blank line or [section]
+      }
+      std::string name = line.substr(0, eq);
+      const size_t first = name.find_first_not_of(" \t\r");
+      if (first == std::string::npos) {
+        continue;
+      }
+      const size_t last = name.find_last_not_of(" \t\r");
+      name = name.substr(first, last - first + 1);
+
+      const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(name);
+      if (info == nullptr) {
+        if (bfbc::IsObsoleteConfigKey(name)) {
+          obsolete.push_back(name);
+        } else {
+          unknown.push_back(name);
+        }
+        continue;
+      }
+
+      std::string value = line.substr(eq + 1);
+      const size_t value_first = value.find_first_not_of(" \t\r\"");
+      const size_t value_last = value.find_last_not_of(" \t\r\"");
+      value = (value_first == std::string::npos)
+                  ? std::string()
+                  : value.substr(value_first, value_last - value_first + 1);
+
+      const rex::cvar::Constraints& limits = info->constraints;
+      if (!limits.allowed_values.empty()) {
+        bool allowed = false;
+        for (const std::string& candidate : limits.allowed_values) {
+          allowed = allowed || candidate == value;
+        }
+        if (!allowed) {
+          std::string list;
+          for (const std::string& candidate : limits.allowed_values) {
+            if (!list.empty()) {
+              list += ", ";
+            }
+            list += candidate;
+          }
+          invalid.push_back(name + " = '" + value + "' is not one of: " + list);
+        }
+        continue;
+      }
+      if (limits.HasRangeConstraint()) {
+        double number = 0.0;
+        if (!rex::cvar::ParseDouble(value, number)) {
+          invalid.push_back(name + " = '" + value + "' is not a number");
+          continue;
+        }
+        const bool below = limits.min.has_value() && number < *limits.min;
+        const bool above = limits.max.has_value() && number > *limits.max;
+        if (below || above) {
+          char range[64];
+          std::snprintf(range, sizeof(range), "%.3g..%.3g",
+                        limits.min.value_or(0.0), limits.max.value_or(0.0));
+          invalid.push_back(name + " = " + value + " is outside " + range);
+        }
+      }
+    }
+    auto join = [](const std::vector<std::string>& names) {
+      std::string text;
+      for (const std::string& name : names) {
+        if (!text.empty()) {
+          text += ", ";
+        }
+        text += name;
+      }
+      return text;
+    };
+    if (!obsolete.empty()) {
+      // Dropped by the config writer the next time the F5 menu saves.
+      REXLOG_INFO("Config: obsolete key(s) ignored and dropped on the next save: {}",
+                  join(obsolete));
+    }
+    if (!unknown.empty()) {
+      REXLOG_WARN("Config: {} key(s) in {} are unknown to this build and stay ignored: {}",
+                  unknown.size(), config_path_.filename().string(), join(unknown));
+    }
+    for (const std::string& problem : invalid) {
+      REXLOG_WARN("Config: {}; the runtime keeps its default. Fix it in F4 or delete the line.",
+                  problem);
     }
   }
 

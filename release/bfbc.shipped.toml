@@ -1,0 +1,73 @@
+# BFBC Recomp - Beta 2.0 default settings
+# F5 opens the settings menu; F4 exposes every cvar.
+log_level = "info"
+allow_game_relative_writes = true
+gpu_plugin = "xenos"
+
+# Video
+fullscreen = true
+resolution = ""
+draw_resolution_scale_x = 2
+draw_resolution_scale_y = 2
+vsync = true
+anisotropic_override = 3
+swap_post_effect = "fxaa"
+bfbc_pace_fps = 0.000000
+
+# Rendering path (restart required after changing)
+readback_resolve = "fast"
+async_shader_compilation = true
+render_target_path_d3d12 = "rtv"
+texture_cache_memory_limit_render_to_texture = 256
+texture_cache_memory_limit_soft = 1024
+texture_cache_memory_limit_hard = 2048
+
+# Input: XInput (Xbox) and SDL (PlayStation) pads are both open
+bfbc_pad_backend = "both"
+mnk_mode = true
+mnk_mouse = true
+mnk_sensitivity = 1.420000
+
+# Keyboard / mouse -> pad bindings
+keybind_a = "Space,Shift+Space,Control+Space,Alt+Space"
+keybind_b = "C,Shift+C,Control+C,Alt+C"
+keybind_x = "R,Shift+R,Control+R,Alt+R"
+keybind_y = "Q,Shift+Q,Control+Q,Alt+Q"
+keybind_left_trigger = "RMB,Shift+RMB,Control+RMB,Alt+RMB"
+keybind_right_trigger = "LMB,Shift+LMB,Control+LMB,Alt+LMB"
+keybind_left_shoulder = "1,Shift+1,Control+1,Alt+1"
+keybind_right_shoulder = "2,Shift+2,Control+2,Alt+2"
+keybind_lstick_up = "W,Shift+W,Control+W,Alt+W"
+keybind_lstick_down = "S,Shift+S,Control+S,Alt+S"
+keybind_lstick_left = "A,Shift+A,Control+A,Alt+A"
+keybind_lstick_right = "D,Shift+D,Control+D,Alt+D"
+keybind_lstick_press = "Shift+Shift"
+keybind_rstick_up = ""
+keybind_rstick_down = ""
+keybind_rstick_left = ""
+keybind_rstick_right = ""
+keybind_rstick_press = "Control+Control"
+keybind_dpad_up = "Up,Shift+Up,Control+Up,Alt+Up"
+keybind_dpad_down = "Down,Shift+Down,Control+Down,Alt+Down"
+keybind_dpad_left = "Left,Shift+Left,Control+Left,Alt+Left"
+keybind_dpad_right = "Right,Shift+Right,Control+Right,Alt+Right"
+keybind_back = "Minus,Shift+Minus,Control+Minus,Alt+Minus"
+keybind_start = "Plus,Shift+Plus,Control+Plus,Alt+Plus"
+keybind_guide = "Tab,Shift+Tab,Control+Tab"
+
+# Mouse aim
+bfbc_mouse_gain = 2.000000
+bfbc_mouse_vertical = 1.800000
+bfbc_mouse_curve = 1.000000
+bfbc_mouse_deadzone = 0.000000
+bfbc_mouse_floor = 7849.000000
+bfbc_mouse_time_normalize = true
+bfbc_mouse_smooth = 0.200000
+bfbc_mouse_dither = false
+bfbc_mouse_debug = false
+
+# Extra mouse buttons (pad action names)
+bfbc_mouse_middle = "b"
+bfbc_mouse_x1 = "x"
+bfbc_mouse_x2 = "y"
+bfbc_mouse_wheel = "none"

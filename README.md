@@ -20,6 +20,7 @@ package contains **no game files**.
 |---|---|
 | `CMakeLists.txt` | Builds `bfbc.exe` (WIN32) and stages the GPU plugin plus a linker map |
 | `bfbc_manifest.toml` | Recompilation manifest: entry point, `setjmp/longjmp`, hand-discovered function entries |
+| `bfbc.toml.example` | Every `bfbc.toml` key, documented; not read by the game |
 | `src/main.cpp` | Registers the application (`REX_DEFINE_APP`) |
 | `src/bfbc_app.h` | App hooks: launch defaults, GPU plugin preload, startup graphics values, dual-pad input factory, overlay cursor watcher |
 | `src/bfbc_graphics.h` | F5 overlay: display, resolution, VSync, filtering, readback resolve, render target path, mouse, key bindings |
@@ -112,8 +113,10 @@ The Beta 2.0 package contains no game files.
    mouse button fires and the right one aims out of the box: the SDK records mouse
    buttons as the virtual keys `LMB`/`RMB`, so they are bound to the pad's triggers
    (`keybind_right_trigger` / `keybind_left_trigger`) unless `bfbc.toml` already stores
-   a binding for them. The shipped layout is A=Space, B=F/X (exit a vehicle), X=R,
-   LB=Q, RB=2, RT=LMB, LT=RMB, WASD on the left stick and the d-pad on the arrow keys.
+   a binding for them. The shipped layout is A=Space, B=C, X=R, Y=Q, LB=1, RB=2,
+   Start=`Plus` (`+`/`=`), Back=`Minus` (`-`), RT=LMB, LT=RMB, WASD on the left stick,
+   the d-pad on the arrow keys, and **no** keyboard keys on the right stick (the
+   shaped mouse drives it; the same arrows used to move the camera and the d-pad).
    Bindings are registered by the input module
    after the SDK has read `bfbc.toml`, so `OnConfigurePaths` pushes the file's
    `keybind_*` values itself before filling in any that are missing; otherwise every
@@ -151,6 +154,15 @@ The Beta 2.0 package contains no game files.
    pushed before GPU init, so a regenerated `bfbc.toml` cannot silently fall back to
    the darker/synchronous defaults. The old `gamma_render_target_as_unorm16=false`
    override is gone; the plugin default is correct.
+8. **`bfbc.toml` is treated as a hand-editable file** (`bfbc_graphics.h`): a save
+   replaces the values in place instead of rebuilding the file, keeps comments, only
+   appends keys the file did not have, drops the flags this build removed
+   (`bfbc_fps_limit`, `resolution_scale`, `d3d12_readback_resolve`), and writes through
+   a temp file + rename so a crash cannot truncate it. At startup `bfbc_app.h` checks
+   every key against the registry and warns about unknown names and about values
+   outside a flag's range/allowed set — the runtime returns `false` for those and logs
+   nothing, which is how `bfbc_mouse_smooth = 1.0` (range 0..0.9) sat in a config for
+   days applying nothing. `bfbc.toml.example` documents the whole surface.
 
 ---
 
@@ -188,8 +200,10 @@ The Beta 2.0 package contains no game files.
 - **Field of view is a launch setting**: the engine reads `Render.ForceFov` from the
   `Game.cfg` override block at boot, so a running session cannot change it. F5 →
   Rendering is a 45–120° slider behind *Override field of view*; **Apply & save** rewrites
-  `config.zz` (only `Game.cfg` is replaced, every other entry is copied byte for byte, and
-  the new archive is re-parsed and compared before the file on disk is touched), reports
+  `config.zz`: `Game.cfg` is rewritten, and so is any other entry that carries the same
+  keys (in practice `ObjectViewer.cfg`, for `PostProcess.FilmGrainEnable`), while every
+  other entry is copied byte for byte; the new archive is re-parsed and compared before
+  the file on disk is touched. The dialog reports
   "restart required", and the stored value is read back the next time the menu opens. The
   same value is reachable from the command line with
   `python tools\config_patch.py fov game\dist\xenon\config.zz 78` (`off` removes it). The
@@ -230,7 +244,7 @@ The Beta 2.0 package contains no game files.
 - **The renderer/lighting switches are config-only now**: `Lighting / Compatibility` and
   `Shadows / depth` were removed from F5 at the owner's request, but the values they set
   stay in `bfbc.toml` (`draw_resolution_scaled_texture_offsets`, the resolve half-pixel
-  flags, `d3d12_readback_resolve`, `depth_float24_*`, `gpu_3d_to_2d_texture`,
+  flags, `readback_resolve`, `depth_float24_*`, `gpu_3d_to_2d_texture`,
   `texture_cache_memory_limit_render_to_texture`) and are still pushed before GPU init on
   every launch, so the shadow and gamma fixes keep working. Changing one means editing
   that file; they all take effect at startup.

@@ -21,6 +21,7 @@ BFBC-Recomp-Beta-2.0-win64/
   README.md
   README.txt
   NOTES-Beta-2.0.md
+  bfbc.toml.example
 ```
 
 `game/` is empty on purpose apart from the placeholder: the user supplies
@@ -32,12 +33,19 @@ or logs.
 
 - `render_target_path_d3d12 = "rtv"` — the stable path. ROV can be selected in F5,
   but it needs a restart and can crash on AMD with SDK 0.10.0.
-- `draw_resolution_scale_x/y = 2` and `resolution_scale = 2`.
+- `draw_resolution_scale_x/y = 2` (the plugin's `resolution_scale` alias is not
+  written: it maps onto the same two flags and only invited them to disagree).
 - `readback_resolve = "fast"` and `async_shader_compilation = true`.
 - `bfbc_pad_backend = "both"`.
-- `bfbc_fps_limit = 0`.
+- `bfbc_pace_fps = 0` — no limiter; `bfbc_fps_limit` is gone (the key was
+  registered only so old files keep parsing, and saving drops it).
 - The mouse defaults: gain 2.0, vertical 1.8, curve 1.0, deadzone 0.0,
-  floor 7849, smoothing 0.2, dither off, frame-rate-independent aim on.
+  floor 7849, smoothing 0.2 (the cvar range is 0..0.9, so the old 1.0 was
+  rejected and silently fell back to 0.2), dither off, frame-rate-independent
+  aim on, side buttons on B/X/Y.
+- `keybind_rstick_*` empty: the shaped mouse drives the right stick, the arrow
+  keys belong to the d-pad alone.
+- `bfbc.toml.example` documents every key; it is not read by the game.
 
 ## Reproducing the package
 
@@ -81,6 +89,14 @@ not contain test-only keys such as `mrt_edram_used_range_clamp_to_min`.
       with both a PlayStation and an Xbox pad connected (or at least the backends
       opened).
 - [ ] `F5 -> Rendering` shows **Readback resolve** and **Render target path**.
+- [ ] `F5 -> Display mode` offers two entries (Windowed / Fullscreen); there is no
+      "Exclusive fullscreen" — SDK 0.10.0 has no such flag.
+- [ ] Saving in F5 keeps the comments in `bfbc.toml`, leaves the key order alone, and
+      does not re-add `bfbc_fps_limit`, `resolution_scale`, `d3d12_readback_resolve`
+      or `fullscreen_exclusive`. Put a `# test` line in the file and a
+      `bfbc_fps_limit = 60` line, save, and check both are handled.
+- [ ] The log of a clean launch has no `Config:` warnings; adding `bfbc_typo = 1` or
+      `bfbc_mouse_smooth = 1.0` produces one.
 - [ ] `game\` contains only `PUT-YOUR-GAME-FILES-HERE.txt`; no `default.xex`,
       content folders, `generated/`, `.map`, `.pdb` or `logs/`.
 - [ ] The zip contains no game files.

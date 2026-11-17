@@ -32,7 +32,9 @@ extract.log
 scale_test_ud/
 
 # Packaged distributable of the recompiled binary (see RELEASE.md)
-release/
+release/*
+# The curated default config is source, not an artifact.
+!release/bfbc.shipped.toml
 
 # Local scratch
 WORK_SUMMARY.txt

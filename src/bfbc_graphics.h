@@ -21,6 +21,7 @@
 #include <fstream>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -371,6 +372,39 @@ inline std::string AddModifierVariants(const std::string& value) {
   return result;
 }
 
+// Keys this project no longer honours. They still load -- an older bfbc.toml has
+// to keep parsing -- but they are dropped the next time anything is saved, so a
+// file never carries a setting this build silently ignores:
+//  - bfbc_fps_limit: replaced by bfbc_pace_fps. The engine's own 30 Hz pacing is
+//    what caps the guest, so the old cap never did anything.
+//  - resolution_scale: alias the plugin maps onto draw_resolution_scale_x/y, which
+//    this menu writes as well; keeping both invites them to disagree.
+//  - d3d12_readback_resolve: the old boolean; readback_resolve is the string enum
+//    that accepts none/fast/some/full.
+//  - fullscreen_exclusive: an SDK flag that does not exist in 0.10.0.
+inline constexpr const char* kObsoleteConfigKeys[] = {
+    "bfbc_fps_limit",
+    "resolution_scale",
+    "d3d12_readback_resolve",
+    // SDK 0.10.0 never registers it: F5 offered an "Exclusive fullscreen" mode
+    // that wrote this key, nothing read it, and the menu always reopened as
+    // Borderless. `fullscreen` is the only display-mode flag.
+    "fullscreen_exclusive",
+};
+
+inline bool IsObsoleteConfigKey(std::string_view key) {
+  for (const char* obsolete : kObsoleteConfigKeys) {
+    if (key == obsolete) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// First line of the file this dialog writes; re-emitted on every save so the
+// header stays in one place instead of accumulating.
+inline constexpr const char* kConfigHeader = "# Auto-generated cvar configuration";
+
 class GraphicsDialog final : public rex::ui::ImGuiDialog {
  public:
   using OutputSizeFn = std::function<std::pair<uint32_t, uint32_t>()>;
@@ -434,7 +468,6 @@ class GraphicsDialog final : public rex::ui::ImGuiDialog {
 
   struct Settings {
     bool fullscreen = true;
-    bool exclusive = false;
     int resolution = 0;
     int scale = 1;
     int aniso = 0;
@@ -444,9 +477,6 @@ class GraphicsDialog final : public rex::ui::ImGuiDialog {
     int readback = 1;
     // Index into kRenderTargetValues; 0 = rtv.
     int render_target = 0;
-    // Guest frame cap in frames per second; 0 leaves the guest uncapped
-    // (bfbc_frame.h, applied by the VdSwap wrapper).
-    int fps_limit = 0;
     // Field of view written to config.zz (engine setting, next launch); 0 keeps
     // the value the game ships with.
     int fov = 0;
@@ -582,7 +612,6 @@ class GraphicsDialog final : public rex::ui::ImGuiDialog {
 
 inline void GraphicsDialog::LoadFromCVars() {
   settings_.fullscreen = rex::cvar::Query<bool>("fullscreen");
-  settings_.exclusive = rex::cvar::Query<bool>("fullscreen_exclusive");
   settings_.vsync = rex::cvar::Query<bool>("vsync");
   settings_.async_shader = rex::cvar::Query<bool>("async_shader_compilation");
   const std::string readback = ReadFlagValue("readback_resolve");
@@ -602,7 +631,6 @@ inline void GraphicsDialog::LoadFromCVars() {
       break;
     }
   }
-  settings_.fps_limit = std::clamp(rex::cvar::Query<int32_t>("bfbc_fps_limit"), 0, 480);
   settings_.scale = ClampScale(rex::cvar::Query<int32_t>("draw_resolution_scale_x"));
   settings_.aniso = std::clamp(rex::cvar::Query<int32_t>("anisotropic_override"), 0,
                                kAnisoCount - 1);
@@ -650,11 +678,9 @@ inline std::vector<std::pair<std::string, std::string>> GraphicsDialog::PendingE
   auto quote = [](const std::string& s) { return "\"" + s + "\""; };
   std::vector<std::pair<std::string, std::string>> entries = {
       {"fullscreen", settings_.fullscreen ? "true" : "false"},
-      {"fullscreen_exclusive", settings_.exclusive ? "true" : "false"},
       {"resolution", quote(kResolutionValues[settings_.resolution])},
       {"draw_resolution_scale_x", std::to_string(ClampScale(settings_.scale))},
       {"draw_resolution_scale_y", std::to_string(ClampScale(settings_.scale))},
-      {"resolution_scale", std::to_string(ClampScale(settings_.scale))},
       {"vsync", settings_.vsync ? "true" : "false"},
       {"anisotropic_override", std::to_string(settings_.aniso)},
       {"async_shader_compilation", settings_.async_shader ? "true" : "false"},
@@ -663,7 +689,6 @@ inline std::vector<std::pair<std::string, std::string>> GraphicsDialog::PendingE
       {"render_target_path_d3d12",
        quote(kRenderTargetValues[std::clamp(settings_.render_target, 0,
                                             kRenderTargetCount - 1)])},
-      {"bfbc_fps_limit", std::to_string(settings_.fps_limit)},
       {"mnk_sensitivity", FormatSensitivity(settings_.mouse_sensitivity)},
       {"mnk_mouse", settings_.mouse_look ? "true" : "false"},
       {"bfbc_mouse_gain", FormatSensitivity(settings_.mouse_gain)},
@@ -775,67 +800,147 @@ inline void GraphicsDialog::Apply(bool persist) {
   }
 }
 
-// Flat "key = value" merge; the SDK writes configs in exactly this shape, so
-// other keys and comments are preserved verbatim.
+// Flat "key = value" merge. The SDK writes configs in exactly this shape, so the
+// file is edited line by line instead of being regenerated:
+//  - a key that is already there is replaced where it stands, so saving from the
+//    menu no longer shuffles the file (the old writer deleted every owned key and
+//    appended all of them again at the bottom);
+//  - comment lines survive, so hand-written notes next to a setting stay put;
+//  - keys this build dropped (kObsoleteConfigKeys) are removed instead of being
+//    carried forward forever;
+//  - only keys the file does not contain yet are appended, under one marker.
+// The result is written to a temp file and renamed over the real one, so a crash
+// mid-save cannot leave a truncated config behind.
 inline bool GraphicsDialog::WriteConfigFile(
     const std::vector<std::pair<std::string, std::string>>& entries) {
   if (config_path_.empty()) {
     return false;
   }
 
-  std::vector<std::string> kept;
-  if (std::filesystem::exists(config_path_)) {
+  auto key_of = [](const std::string& line) {
+    const size_t eq = line.find('=');
+    if (eq == std::string::npos) {
+      return std::string();
+    }
+    const std::string_view raw(line.data(), eq);
+    const size_t first = raw.find_first_not_of(" \t");
+    if (first == std::string_view::npos) {
+      return std::string();
+    }
+    const size_t last = raw.find_last_not_of(" \t");
+    return std::string(raw.substr(first, last - first + 1));
+  };
+
+  std::vector<std::string> lines;
+  {
     std::ifstream in(config_path_);
     std::string line;
     while (std::getline(in, line)) {
-      std::string key;
-      const size_t eq = line.find('=');
-      if (eq != std::string::npos) {
-        key = line.substr(0, eq);
-        const size_t first = key.find_first_not_of(" \t");
-        const size_t last = key.find_last_not_of(" \t");
-        key = (first == std::string::npos) ? std::string() : key.substr(first, last - first + 1);
+      if (!line.empty() && line.back() == '\r') {
+        line.pop_back();
       }
-      bool ours = false;
-      for (const auto& [name, value] : entries) {
-        if (key == name) {
-          ours = true;
-          break;
+      lines.push_back(std::move(line));
+    }
+  }
+
+  std::vector<bool> written(entries.size(), false);
+  std::vector<std::string> merged;
+  bool marker_seen = false;
+  merged.reserve(lines.size());
+  for (const std::string& line : lines) {
+    const std::string key = key_of(line);
+    if (key.empty()) {
+      // Comments and blank lines are kept as they are. The generated header is
+      // re-emitted below, and the menu marker is kept once so a save does not
+      // add a second one (nor remove the one already there, which would make
+      // every other save rewrite the file for no reason).
+      if (line == kConfigHeader) {
+        continue;
+      }
+      if (line == "# bfbc graphics menu") {
+        if (marker_seen) {
+          continue;
         }
+        marker_seen = true;
       }
-      if (!ours) {
-        kept.push_back(line);
+      merged.push_back(line);
+      continue;
+    }
+    if (IsObsoleteConfigKey(key)) {
+      continue;
+    }
+    bool replaced = false;
+    for (size_t i = 0; i < entries.size(); ++i) {
+      if (entries[i].first != key) {
+        continue;
       }
+      merged.push_back(entries[i].first + " = " + entries[i].second);
+      written[i] = true;
+      replaced = true;
+      break;
+    }
+    if (!replaced) {
+      merged.push_back(line);  // a key this menu does not own: keep it verbatim
     }
   }
 
   // Drop trailing blank lines left behind by removed keys.
-  while (!kept.empty() && kept.back().find_first_not_of(" \t\r") == std::string::npos) {
-    kept.pop_back();
+  while (!merged.empty() && merged.back().find_first_not_of(" \t") == std::string::npos) {
+    merged.pop_back();
   }
 
-  std::ofstream out(config_path_, std::ios::trunc);
-  if (!out) {
-    REXLOG_ERROR("Graphics: cannot write {}", config_path_.string());
+  bool appended = false;
+  for (size_t i = 0; i < entries.size(); ++i) {
+    appended = appended || !written[i];
+  }
+
+  std::string text = std::string(kConfigHeader) + "\n";
+  for (const std::string& line : merged) {
+    text += line + "\n";
+  }
+  if (appended) {
+    if (!marker_seen) {
+      text += "\n# bfbc graphics menu\n";
+    }
+    for (size_t i = 0; i < entries.size(); ++i) {
+      if (!written[i]) {
+        text += entries[i].first + " = " + entries[i].second + "\n";
+      }
+    }
+  }
+
+  std::filesystem::path temp_path = config_path_;
+  temp_path += ".tmp";
+  {
+    std::ofstream out(temp_path, std::ios::trunc);
+    if (!out) {
+      REXLOG_ERROR("Graphics: cannot write {}", temp_path.string());
+      return false;
+    }
+    out << text;
+    out.flush();
+    if (!out) {
+      REXLOG_ERROR("Graphics: short write to {}", temp_path.string());
+      return false;
+    }
+  }
+
+  std::error_code rename_error;
+  std::filesystem::rename(temp_path, config_path_, rename_error);
+  if (rename_error) {
+    // Some filesystems refuse to replace an existing file with rename().
+    std::filesystem::remove(config_path_, rename_error);
+    rename_error.clear();
+    std::filesystem::rename(temp_path, config_path_, rename_error);
+  }
+  if (rename_error) {
+    REXLOG_ERROR("Graphics: cannot replace {}: {}", config_path_.string(),
+                 rename_error.message());
+    std::filesystem::remove(temp_path, rename_error);
     return false;
   }
-  if (!kept.empty()) {
-    out << "# Auto-generated cvar configuration\n";
-    for (const auto& line : kept) {
-      if (!line.empty() && line[0] == '#') {
-        continue;  // Avoid duplicating the generated header.
-      }
-      out << line << "\n";
-    }
-  } else {
-    out << "# Auto-generated cvar configuration\n";
-  }
-  out << "\n# bfbc graphics menu\n";
-  for (const auto& [name, value] : entries) {
-    out << name << " = " << value << "\n";
-  }
   REXLOG_INFO("Graphics: wrote {}", config_path_.string());
-  return static_cast<bool>(out);
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -845,11 +950,15 @@ inline bool GraphicsDialog::WriteConfigFile(
 inline void GraphicsDialog::DrawDisplaySection() {
   ImGui::SeparatorText("Display");
 
-  int mode = settings_.fullscreen ? (settings_.exclusive ? 2 : 1) : 0;
-  static const char* kModeLabels[] = {"Windowed", "Borderless fullscreen", "Exclusive fullscreen"};
-  if (ImGui::Combo("Display mode", &mode, kModeLabels, 3)) {
+  // SDK 0.10.0 has no exclusive-fullscreen flag: `fullscreen` is the only mode
+  // cvar, and the "Exclusive fullscreen" entry this menu used to offer wrote
+  // `fullscreen_exclusive`, which no module registers (the value was ignored and
+  // the menu always came back as Borderless). Two modes, both real.
+  bool fullscreen = settings_.fullscreen;
+  static const char* kModeLabels[] = {"Windowed", "Fullscreen (borderless)"};
+  int mode = fullscreen ? 1 : 0;
+  if (ImGui::Combo("Display mode", &mode, kModeLabels, 2)) {
     settings_.fullscreen = mode != 0;
-    settings_.exclusive = mode == 2;
     settings_.dirty = true;
   }
 
@@ -899,22 +1008,6 @@ inline void GraphicsDialog::DrawRenderingSection() {
 
   if (ImGui::Checkbox("VSync", &settings_.vsync)) {
     settings_.dirty = true;
-  }
-
-  int fps_limit = settings_.fps_limit;
-  if (ImGui::InputInt("Frame rate limit", &fps_limit, 5, 30)) {
-    settings_.fps_limit = std::clamp(fps_limit, 0, 480);
-    settings_.dirty = true;
-  }
-  if (ImGui::IsItemHovered()) {
-    ImGui::SetTooltip(
-        "Frames per second the guest is allowed to present; 0 is uncapped. Applied\n"
-        "live at the guest's swap, so it needs no restart. VSync still caps at the\n"
-        "display rate whenever that is the lower of the two.");
-  }
-  if (settings_.fps_limit != 0) {
-    ImGui::SameLine();
-    ImGui::TextDisabled("(%.2f ms)", 1000.0 / settings_.fps_limit);
   }
 
   bool override_fov = settings_.fov != 0;

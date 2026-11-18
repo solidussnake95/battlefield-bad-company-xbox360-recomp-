@@ -45,6 +45,13 @@ if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { Fail 'gh CLI is requi
 & gh auth status *> $null
 if ($LASTEXITCODE -ne 0) { Fail 'gh is not authenticated (run: gh auth login)' }
 
+# The workflow runs its steps with `shell: pwsh`; without PowerShell 7 the job
+# dies at the first step with "pwsh: command not found".
+if (-not (Get-Command pwsh -ErrorAction SilentlyContinue)) {
+    Step 'pwsh (PowerShell 7) is not installed - the workflow needs it'
+    Step 'install with: winget install --id Microsoft.PowerShell -e --source winget'
+}
+
 function Api([string]$Method, [string]$Path) {
     & gh api -X $Method $Path
     if ($LASTEXITCODE -ne 0) { Fail "gh api $Method $Path failed" }

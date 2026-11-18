@@ -33,6 +33,15 @@ never runs there, so the retail files cannot be deleted by a checkout.
 powershell -ExecutionPolicy Bypass -File tools\ci\install-runner.ps1 -Start
 ```
 
+The workflow steps use `shell: pwsh`, so the machine needs PowerShell 7:
+
+```powershell
+winget install --id Microsoft.PowerShell -e --source winget
+```
+
+If `pwsh` is missing the job fails immediately with `pwsh: command not found`;
+`install-runner.ps1` warns about it up front.
+
 That downloads the current `actions-runner-win-x64`, registers it against this
 repository with the labels `self-hosted, windows, x64, bfbc`, and starts it as a
 per-user *logon task* (`BFBC GitHub Actions Runner`). No Administrator rights are

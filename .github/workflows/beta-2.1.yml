@@ -24,6 +24,10 @@ on:
         description: 'Git ref to build (tag or branch)'
         required: true
         default: 'beta-2.1'
+      release_tag:
+        description: 'Release to publish to (defaults to the ref name; set it when building a branch)'
+        required: false
+        default: ''
       publish_release:
         description: 'Create or update the GitHub release'
         type: boolean
@@ -45,6 +49,7 @@ jobs:
 
     env:
       REF: ${{ github.event.inputs.ref || github.ref_name }}
+      TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
       PUBLISH_RELEASE: ${{ github.event_name == 'push' || inputs.publish_release }}
       VERSION: '2.1'
       # Local machine paths; override with repository variables if they move.
@@ -114,7 +119,7 @@ jobs:
         if: env.PUBLISH_RELEASE == 'true'
         shell: pwsh
         run: |
-          $tag = $env:REF
+          $tag = $env:TAG
           $version = $env:VERSION
           $zip = "dist\BFBC-Recomp-Beta-$version-win64.zip"
           $sha = "$zip.sha256"
@@ -138,7 +143,7 @@ jobs:
         shell: pwsh
         run: |
           @"
-          ### BFBC Recomp Beta $env:VERSION ($env:REF)
+          ### BFBC Recomp Beta $env:VERSION ($env:REF -> $env:TAG)
 
           | | |
           |---|---|

@@ -98,6 +98,18 @@ if (-not (Test-Path (Join-Path $RunnerDir 'config.cmd'))) {
 # --- register ----------------------------------------------------------------
 $configured = Test-Path (Join-Path $RunnerDir '.runner')
 if (-not $configured -or $Reconfigure) {
+    if ($configured) {
+        # config.cmd refuses to configure over an existing registration.
+        $removeToken = (Api POST "repos/$Repo/actions/runners/remove-token" | ConvertFrom-Json).token
+        Step 'removing the existing registration'
+        Push-Location $RunnerDir
+        try {
+            & .\config.cmd remove --unattended --token $removeToken
+            if ($LASTEXITCODE -ne 0) {
+                Fail 'config.cmd remove failed - it refuses while the runner is busy; stop it (Stop-Process Runner.Listener) and retry'
+            }
+        } finally { Pop-Location }
+    }
     $token = (Api POST "repos/$Repo/actions/runners/registration-token" | ConvertFrom-Json).token
     Step "registering '$Name' with labels: self-hosted,windows,x64,$Labels"
     Push-Location $RunnerDir

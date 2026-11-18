@@ -243,9 +243,16 @@ try {
 # The repair edits codegen outputs, and ninja treats the codegen edge as dirty
 # while ANY of its many outputs is older than the manifest - which would rerun
 # codegen right before compiling and replace the repaired branches with
-# REX_FATAL() again. Refresh the whole generated tree so the edge is clean.
-Get-ChildItem (Join-Path $BuildRoot 'generated\default') -Recurse -File |
-    ForEach-Object { $_.LastWriteTime = Get-Date }
+# REX_FATAL() again. Refresh the generated sources (but not the stamp: touching
+# it invalidates ninja's stored depfile info and forces codegen to re-run), then
+# put the manifest behind the oldest output so the edge is clean.
+$now = Get-Date
+$genDir = Join-Path $BuildRoot 'generated\default'
+Get-ChildItem $genDir -Recurse -File |
+    Where-Object { $_.Name -ne 'codegen.build.stamp' } |
+    ForEach-Object { $_.LastWriteTime = $now }
+$oldest = (Get-ChildItem $genDir -Recurse -File | Measure-Object LastWriteTime -Minimum).Minimum
+(Get-Item (Join-Path $BuildRoot 'bfbc_manifest.toml')).LastWriteTime = $oldest.AddMinutes(-1)
 
 Step 'build'
 & $CMake --build $Build -j $Jobs

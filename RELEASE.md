@@ -116,6 +116,11 @@ gh release create beta-2.0 "release\BFBC-Recomp-Beta-2.0-win64.zip" `
 The repository's previous release is Beta 1.0:
 https://github.com/solidussnake95/battlefield-bad-company-xbox360-recomp-/releases/tag/beta-1.0
 
+From Beta 2.1 on, the package can also be produced by CI: push the tag (or run
+the workflow by hand) and `.github/workflows/beta-2.1.yml` builds it on the
+self-hosted runner, uploads the zip as a workflow artifact and creates the
+release. See `docs/ci.md` for the one-time runner setup.
+
 ## Warning
 
 `bfbc.exe` is compiled from code generated out of `default.xex`, so it contains

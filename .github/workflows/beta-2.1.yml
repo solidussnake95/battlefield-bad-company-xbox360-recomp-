@@ -1,0 +1,151 @@
+name: Build Beta 2.1
+
+# The recompiled sources come out of `rexglue codegen` on the retail
+# `game/default.xex`, so `game/` and `generated/` (~190 MB) cannot live in this
+# public repository. The build therefore runs on a self-hosted Windows runner on
+# the machine that owns those files; `tools/ci/build-beta.ps1` extracts the
+# requested git ref into a staging tree and junctions the local `game/` and
+# `generated/` into it. Nothing game-derived is ever uploaded as source.
+#
+# Triggers:
+#   * push a `beta-2.1` tag          -> build + publish the GitHub release
+#   * Actions -> Run workflow         -> build any ref (default beta-2.1), with
+#                                       release publishing on/off
+#
+# One-time runner setup: `tools/ci/install-runner.ps1` (see docs/ci.md).
+
+on:
+  push:
+    tags:
+      - 'beta-2.1'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to build (tag or branch)'
+        required: true
+        default: 'beta-2.1'
+      publish_release:
+        description: 'Create or update the GitHub release'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.event.inputs.ref || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build + package win64
+    # Labels are set by tools/ci/install-runner.ps1.
+    runs-on: [self-hosted, windows, bfbc]
+    timeout-minutes: 150
+
+    env:
+      REF: ${{ github.event.inputs.ref || github.ref_name }}
+      PUBLISH_RELEASE: ${{ github.event_name == 'push' || inputs.publish_release }}
+      VERSION: '2.1'
+      # Local machine paths; override with repository variables if they move.
+      BFBC_REPO_DIR: ${{ vars.BFBC_REPO_DIR || 'D:\recomps\bfbc-recomp' }}
+      BFBC_GAME_DIR: ${{ vars.BFBC_GAME_DIR }}
+      BFBC_GENERATED_DIR: ${{ vars.BFBC_GENERATED_DIR }}
+      BFBC_SDK_DIR: ${{ vars.BFBC_SDK_DIR || 'D:\recomps\.sdk\rexglue-sdk-0.10.0\win-amd64' }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      # Tooling (this workflow + tools/ci/build-beta.ps1) comes from the default
+      # branch; the sources that get compiled come from $REF via `git archive`
+      # inside the build script. A tag pushed before the CI files existed can
+      # therefore still be built.
+      - name: Checkout tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+          clean: true
+
+      - name: Preflight
+        id: preflight
+        shell: pwsh
+        run: |
+          $repo = $env:BFBC_REPO_DIR
+          if (-not (Test-Path (Join-Path $repo 'bfbc_manifest.toml'))) {
+            throw "BFBC_REPO_DIR does not look like the project: $repo"
+          }
+          if (-not (git -C $repo rev-parse --verify --quiet "$($env:REF)^{commit}")) {
+            throw "ref '$($env:REF)' is not in $repo - fetch the tag there first (git fetch --tags)"
+          }
+          "commit=$(git -C $repo rev-parse --short "$($env:REF)")" >> $env:GITHUB_OUTPUT
+
+      - name: Build and package
+        shell: pwsh
+        run: |
+          $params = @(
+            '-Version', $env:VERSION,
+            '-Ref', $env:REF,
+            '-SourceRoot', $env:BFBC_REPO_DIR,
+            '-OutDir', (Join-Path $env:GITHUB_WORKSPACE 'dist')
+          )
+          if ($env:BFBC_GAME_DIR)      { $params += @('-GameDir', $env:BFBC_GAME_DIR) }
+          if ($env:BFBC_GENERATED_DIR) { $params += @('-GeneratedDir', $env:BFBC_GENERATED_DIR) }
+          if ($env:BFBC_SDK_DIR)       { $params += @('-SdkDir', $env:BFBC_SDK_DIR) }
+          & "$env:GITHUB_WORKSPACE\tools\ci\build-beta.ps1" @params
+
+          $zip = Get-Item (Join-Path $env:GITHUB_WORKSPACE "dist\BFBC-Recomp-Beta-$($env:VERSION)-win64.zip")
+          $sha = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash
+          "ZIP=$($zip.FullName)"   >> $env:GITHUB_OUTPUT
+          "SHA256=$sha"            >> $env:GITHUB_OUTPUT
+          "SIZE=$($zip.Length)"    >> $env:GITHUB_OUTPUT
+        id: build
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BFBC-Recomp-Beta-${{ env.VERSION }}-win64
+          path: |
+            dist/BFBC-Recomp-Beta-${{ env.VERSION }}-win64.zip
+            dist/BFBC-Recomp-Beta-${{ env.VERSION }}-win64.zip.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish release
+        if: env.PUBLISH_RELEASE == 'true'
+        shell: pwsh
+        run: |
+          $tag = $env:REF
+          $version = $env:VERSION
+          $zip = "dist\BFBC-Recomp-Beta-$version-win64.zip"
+          $sha = "$zip.sha256"
+          $title = "BFBC Recomp Beta $version win64"
+          $notes = "NOTES-Beta-$version.md"
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "release $tag exists - updating assets"
+            gh release upload $tag $zip $sha --clobber
+            if (Test-Path $notes) { gh release edit $tag --notes-file $notes }
+          } else {
+            gh release create $tag $zip $sha `
+              --title $title `
+              --notes-file $notes `
+              --verify-tag
+          }
+          if ($LASTEXITCODE -ne 0) { throw "gh release failed ($LASTEXITCODE)" }
+
+      - name: Summary
+        shell: pwsh
+        run: |
+          @"
+          ### BFBC Recomp Beta $env:VERSION ($env:REF)
+
+          | | |
+          |---|---|
+          | commit | ``${{ steps.preflight.outputs.commit }}`` |
+          | zip | ``${{ steps.build.outputs.SIZE }}`` bytes |
+          | sha256 | ``${{ steps.build.outputs.SHA256 }}`` |
+
+          Scan the zip before running it, e.g. upload it to https://www.virustotal.com/
+          or run ``Get-FileHash`` on the download and compare the hash above.
+          "@ >> $env:GITHUB_STEP_SUMMARY

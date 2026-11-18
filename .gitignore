@@ -39,3 +39,6 @@ release/*
 # Local scratch
 WORK_SUMMARY.txt
 __pycache__/
+
+# CI packaging output (tools/ci/build-beta.ps1 -OutDir)
+dist/

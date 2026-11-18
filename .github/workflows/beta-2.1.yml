@@ -82,16 +82,16 @@ jobs:
       - name: Build and package
         shell: pwsh
         run: |
-          $params = @(
-            '-Version', $env:VERSION,
-            '-Ref', $env:REF,
-            '-SourceRoot', $env:BFBC_REPO_DIR,
-            '-OutDir', (Join-Path $env:GITHUB_WORKSPACE 'dist')
-          )
-          if ($env:BFBC_GAME_DIR)      { $params += @('-GameDir', $env:BFBC_GAME_DIR) }
-          if ($env:BFBC_GENERATED_DIR) { $params += @('-GeneratedDir', $env:BFBC_GENERATED_DIR) }
-          if ($env:BFBC_SDK_DIR)       { $params += @('-SdkDir', $env:BFBC_SDK_DIR) }
-          & "$env:GITHUB_WORKSPACE\tools\ci\build-beta.ps1" @params
+          $call = @{
+            Version    = $env:VERSION
+            Ref        = $env:REF
+            SourceRoot = $env:BFBC_REPO_DIR
+            OutDir     = Join-Path $env:GITHUB_WORKSPACE 'dist'
+          }
+          if ($env:BFBC_GAME_DIR)      { $call.GameDir = $env:BFBC_GAME_DIR }
+          if ($env:BFBC_GENERATED_DIR) { $call.GeneratedDir = $env:BFBC_GENERATED_DIR }
+          if ($env:BFBC_SDK_DIR)       { $call.SdkDir = $env:BFBC_SDK_DIR }
+          & "$env:GITHUB_WORKSPACE\tools\ci\build-beta.ps1" @call
 
           $zip = Get-Item (Join-Path $env:GITHUB_WORKSPACE "dist\BFBC-Recomp-Beta-$($env:VERSION)-win64.zip")
           $sha = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash
